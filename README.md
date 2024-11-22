@@ -43,7 +43,7 @@ This will install listed packages in file requirements.txt
 There are various python scripts written while learning
 RDFLib and its related items
 
-To run a test case inside folder
+To run a test case inside folder test
 inside RdfGrapTestContainer.py > function test_query_graph
 ```
 python -m unittest -v test.RdfGrapTestContainer.RdfGrapLearnTest.test_query_graph
