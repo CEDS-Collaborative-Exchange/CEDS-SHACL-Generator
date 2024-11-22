@@ -1,0 +1,4 @@
+rdflib
+streamlit
+streamlit_tree_select
+pytest

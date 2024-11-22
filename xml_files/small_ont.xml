@@ -1,0 +1,114 @@
+<rdf:RDF xmlns="http://ceds.ed.gov/terms#"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:xml="http://www.w3.org/XML/1998/namespace"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:skos="http//www.w3.org/2004/02/skos/core#"
+         xmlns:schema="https://schema.org/">
+    <!-- Base Class Definitions -->
+    <!--    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#BaseCEDSResource">-->
+    <!--        <rdfs:label>Base CEDS Resource</rdfs:label>-->
+    <!--        <rdfs:comment>-->
+    <!--            The BaseCEDSResource class represents the base resource in the Common Education Data Standards (CEDS)-->
+    <!--            ontology.-->
+    <!--            It serves as the foundational class from which all other CEDS resource classes inherit common properties and-->
+    <!--            attributes.-->
+    <!--            Subclasses of BaseCEDSResource may include specific types of instructional resources, such as students,-->
+    <!--            staff, courses,-->
+    <!--            assessments, etc.-->
+    <!--        </rdfs:comment>-->
+    <!--    </rdfs:Class>-->
+
+    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#RecordStatus">
+        <rdfs:label>Record Status</rdfs:label>
+        <!--        <rdfs:comment>-->
+        <!--            TBD-->
+        <!--        </rdfs:comment>-->
+    </rdfs:Class>
+
+    <!--   Data properties for table: RecordStatus-->
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#RecordStatusDate">
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://www.w3.org/2001/XMLSchema#dateTime"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdf:Property>
+
+    <!-- Object relationship between tables: RecordStatusHistory and Organization -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#hasOrganization">
+        <rdfs:comment></rdfs:comment>
+        <rdfs:label>Has Organization</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Organization"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!-- DISCUSSION: Could be just "CreatedBy" and point to both Person and Organization -->
+    <!-- Object relationship between tables: RecordStatus and Person -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#createdByPerson">
+        <rdfs:comment>TBD</rdfs:comment>
+        <rdfs:label>Record Created By person</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Person"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!-- Object relationship between tables: RecordStatus and Organization -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#createdByOrganization">
+        <rdfs:comment>TBD</rdfs:comment>
+        <rdfs:label>Record Created By Organization</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Organization"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!--     Class: AccreditingOrganization-->
+    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#C200393">
+        <rdfs:subClassOf rdf:resource="http://ceds.ed.gov/terms#BaseCEDSResource"/>
+        <rdfs:label>Accrediting Organization</rdfs:label>
+        <skos:notation>AccreditingOrganization</skos:notation>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">C200393</dc:identifier>
+        <rdfs:comment>An authority that reviews an organization's educational program and staff for quality, and
+            certifies whether the organization meets a minimal set of standards.
+        </rdfs:comment>
+    </rdfs:Class>
+
+
+    <!-- Object Property Relationship: Organization and AccreditingOrganization -->
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#P600438">
+        <rdfs:label>Has Accrediting Organization</rdfs:label>
+        <skos:notation>hasAccreditingOrganization</skos:notation>
+        <schema:domainIncludes rdf:resource="http://ceds.ed.gov/terms#C200239"/>
+        <schema:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#C200393"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">P600438</dc:identifier>
+    </rdf:Property>
+
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#P000039">
+        <rdfs:label>Has Charter School Indicator</rdfs:label>
+        <skos:notation>hasCharterSchoolIndicator</skos:notation>
+        <schema:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <schema:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#C000039"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">P000039</dc:identifier>
+    </rdf:Property>
+
+        <rdfs:Class rdf:about="http://ceds.ed.gov/terms#RecordStatusGreat">
+        <rdfs:label>Record Status</rdfs:label>
+        <!--        <rdfs:comment>-->
+        <!--            TBD-->
+        <!--        </rdfs:comment>-->
+    </rdfs:Class>
+
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#P000039">
+        <rdfs:label>Has Charter School Indicator</rdfs:label>
+        <skos:notation>hasCharterSchoolIndicator</skos:notation>
+        <schema:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatusGreat"/>
+        <schema:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#C000039"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">P000039</dc:identifier>
+    </rdf:Property>
+
+</rdf:RDF>

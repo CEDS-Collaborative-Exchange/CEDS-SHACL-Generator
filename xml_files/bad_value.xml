@@ -1,0 +1,72 @@
+<rdf:RDF xmlns="http://ceds.ed.gov/terms#"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:xml="http://www.w3.org/XML/1998/namespace"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:skos="http//www.w3.org/2004/02/skos/core#"
+         xmlns:schema="https://schema.org/">
+
+    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#RecordStatus">
+        <rdfs:label>Record Status</rdfs:label>
+        <rdfs:comment>
+            TBD
+        </rdfs:comment>
+    </rdfs:Class>
+    <!-- Object relationship between tables: RecordStatusHistory and Organization -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#hasOrganization">
+        <rdfs:label>Has Organization</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Organization"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!-- DISCUSSION: Could be just "CreatedBy" and point to both Person and Organization -->
+    <!-- Object relationship between tables: RecordStatus and Person -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#createdByPerson">
+        <rdfs:comment>TBD</rdfs:comment>
+        <rdfs:label>Record Created By person</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Person"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!-- Object relationship between tables: RecordStatus and Organization -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#createdByOrganization">
+        <rdfs:comment>TBD</rdfs:comment>
+        <rdfs:label>Record Created By Organization</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#Organization"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+    <!-- Object relationship between tables: RecordStatusHistory and RecordStatus -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#hasRecordStatus">
+        <rdfs:comment></rdfs:comment>
+        <rdfs:label>Has RecordStatus</rdfs:label>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatusHistory"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+
+    <!-- Object relationship between tables: BaseCEDSResource and RecordStatus -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#hasRecordStatus">
+        <rdfs:comment>Has Record Status</rdfs:comment>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#BaseCEDSResource"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+
+    <!-- Object relationship between tables: RecordStatus and RecordStatusHistory -->
+    <rdfs:Property rdf:about="http://ceds.ed.gov/terms#hasRecordStatusHistory">
+        <rdfs:comment>Has Record Status History</rdfs:comment>
+        <rdfs:domainIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatus"/>
+        <rdfs:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#RecordStatusHistory"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+    </rdfs:Property>
+
+
+</rdf:RDF>

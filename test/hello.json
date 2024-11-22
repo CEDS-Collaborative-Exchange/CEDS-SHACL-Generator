@@ -1,0 +1,24 @@
+[
+  {
+    "label": "Record Status",
+    "value": "{\"name\":\"Record Status\",\"uri_ref\":\"http://ceds.ed.gov/terms#RecordStatus\"}",
+    "children": [
+      {
+        "label": "Has Organization",
+        "value": "{\"name\":\"Has Organization\",\"prop_uri\":\"http://ceds.ed.gov/terms#hasOrganization\",\"class_uri\":\"http://ceds.ed.gov/terms#RecordStatus\",\"data_type\":\"http://ceds.ed.gov/terms#Organization\"}"
+      },
+      {
+        "label": "Record Created By person",
+        "value": "{\"name\":\"Record Created By person\",\"prop_uri\":\"http://ceds.ed.gov/terms#createdByPerson\",\"class_uri\":\"http://ceds.ed.gov/terms#RecordStatus\",\"data_type\":\"http://ceds.ed.gov/terms#Person\"}"
+      },
+      {
+        "label": "Record Created By Organization",
+        "value": "{\"name\":\"Record Created By Organization\",\"prop_uri\":\"http://ceds.ed.gov/terms#createdByOrganization\",\"class_uri\":\"http://ceds.ed.gov/terms#RecordStatus\",\"data_type\":\"http://ceds.ed.gov/terms#Organization\"}"
+      },
+      {
+        "label": "hasRecordStatusHistory",
+        "value": "{\"name\":\"hasRecordStatusHistory\",\"prop_uri\":\"http://ceds.ed.gov/terms#hasRecordStatusHistory\",\"class_uri\":\"http://ceds.ed.gov/terms#RecordStatus\",\"data_type\":\"http://ceds.ed.gov/terms#RecordStatusHistory\"}"
+      }
+    ]
+  }
+]

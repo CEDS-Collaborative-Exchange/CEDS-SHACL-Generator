@@ -1,0 +1,53 @@
+<rdf:RDF xmlns="http://ceds.ed.gov/terms#"
+         xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:owl="http://www.w3.org/2002/07/owl#"
+         xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:xml="http://www.w3.org/XML/1998/namespace"
+         xmlns:xsd="http://www.w3.org/2001/XMLSchema#"
+         xmlns:rdfs="http://www.w3.org/2000/01/rdf-schema#"
+         xmlns:skos="http//www.w3.org/2004/02/skos/core#"
+         xmlns:schema="https://schema.org/">
+
+    <!-- Class: K12School -->
+    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#C200199">
+        <rdfs:subClassOf rdf:resource="http://ceds.ed.gov/terms#BaseCEDSResource"/>
+        <rdfs:label>K12 School</rdfs:label>
+        <skos:notation>K12School</skos:notation>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">C200199</dc:identifier>
+        <rdfs:comment>Information specific to K12 Schools. (Organization and related tables have properties that are
+            common.)
+        </rdfs:comment>
+    </rdfs:Class>
+
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#P000039">
+        <rdfs:label>Has Charter School Indicator</rdfs:label>
+        <skos:notation>hasCharterSchoolIndicator</skos:notation>
+        <schema:domainIncludes rdf:resource="http://ceds.ed.gov/terms#C200199"/>
+        <schema:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#C000039"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">P000039</dc:identifier>
+    </rdf:Property>
+
+
+    <!-- Class: LocalEducationAgency -->
+    <rdfs:Class rdf:about="http://ceds.ed.gov/terms#C200188">
+        <rdfs:subClassOf rdf:resource="http://ceds.ed.gov/terms#BaseCEDSResource"/>
+        <rdfs:label>Local Education Agency</rdfs:label>
+        <skos:notation>LocalEducationAgency</skos:notation>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">C200188</dc:identifier>
+        <rdfs:comment>An administrative unit within K-12 education at the local level which exists primarily to operate
+            schools or to contract for educational services. These units may or may not be co-extensive with county,
+            city, or town boundaries.
+        </rdfs:comment>
+    </rdfs:Class>
+    <rdf:Property rdf:about="http://ceds.ed.gov/terms#P000039">
+        <rdfs:label>Has Charter School Indicator</rdfs:label>
+        <skos:notation>hasCharterSchoolIndicator</skos:notation>
+        <schema:domainIncludes rdf:resource="http://ceds.ed.gov/terms#C200188"/>
+        <schema:rangeIncludes rdf:resource="http://ceds.ed.gov/terms#C000039"/>
+        <dc:creator>Common Education Data Standards</dc:creator>
+        <dc:identifier rdf:datatype="http://www.w3.org/2001/XMLSchema#token">P000039</dc:identifier>
+    </rdf:Property>
+</rdf:RDF>
