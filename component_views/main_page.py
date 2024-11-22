@@ -20,7 +20,7 @@ def load_onto_json_tree(file_name):
 
 onto_file_path = os.path.join(PROJECT_ROOT_DIR, "xml_files/ontology.xml")
 
-nodes = load_onto_json_tree(onto_file_path)
+
 
 
 def enter_app():
@@ -29,6 +29,7 @@ def enter_app():
         if "return_select" not in st.session_state:
             log.info("return_select not in session_state")
             st.session_state.return_select = []
+        nodes = load_onto_json_tree(onto_file_path)
 
         tree_select(nodes,
                     no_cascade=True,
