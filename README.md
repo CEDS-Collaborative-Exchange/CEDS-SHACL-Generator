@@ -1,4 +1,4 @@
-##CEDS/CEPI SHACL Shape Generator Tool
+# CEDS/CEPI SHACL Shape Generator Tool
 
 # Overview
 
@@ -65,7 +65,7 @@ The script can be run directly via command line:
 python create_shacl.py
 
 
-## Overarching Process
+# Overarching Process
 # Overview
 This document serves as an entry point to users tasked with the creation of SHACL documents for the purpose of supporting CEPI data collection. This includes identifying the inputs, the outputs and the means for translating between the two. Additionally, an abbreviated background overview of major concepts is also provided.
 
@@ -78,12 +78,8 @@ As shown below, the path to generating SHACL file(s) that will ensure data are c
 |-------------------------------------|-------------|----------------|
 | `CEDS Ontology`                     | The CEDS ontology is the logical definition of the CEDS data model in RDF XML format. It includes fundamental concepts like a Person with a Name, as well as specific elements like gender.    | [CEDS open-source community](https://github.com/CEDStandards/CEDS-Ontology), [Self-hosted version](https://dev.cepi.state.mi.us/Ontology/ceds-ontology.rdf) |
 | `ETL Checklist`                     | Education authorities extend the CEDS data model by aligning fields from legacy systems to CEDS specifications. These extensions can be specified in an ETL checklist and translated to SHACL. | — |
-| `CEPI Extension Ontology Generator` | Converts ETL Checklist rows and columns into RDF XML format for the CEPI Ontology using a small Python application.                                                                            | [CEPI Extension Ontology Generator](https://dev.azure.com/SOM-MDECEPI/MiSchool.DataModernization/_git/CEDS%20Data%20Warehouse?path=/SHACL/CEPI%20Extension%20Ontology%20Generator) |
-| `CEPI Ontology`                     | Custom nodes and properties for a state education authority are generated as a stand-alone file for flexibility.                                                                               | [Person class extension](https://dev.cepi.state.mi.us/Ontology/cepi-ontology/Person_Ontology_Extension.ttl) |
-| `CEPI SHACL Generator`              | Translates an RDF XML ontology to SHACL format through prescribed rules and mappings, encapsulated in a Python-based tool.                                                                     | [CEPI SHACL Generator](https://dev.azure.com/SOM-MDECEPI/MiSchool.DataModernization/_git/CEDS%20Data%20Warehouse?path=/SHACL/SHACL%20Generator) |
-| `CEDS & CEPI Node SHACL`            | Identifies foundational elements to be collected, such as a person’s name and gender, based on the CEDS or CEPI ontology using the CEPI SHACL Generator.                                       | — |
 | `CEDS SHACL Generator`              | A separate working group developed a PHP-based tool to translate CEDS ontology properties into the SHACL format.                                                                               | [CEDS SHACL Generator](https://github.com/opensalt/CEDS-shacl-generator) |
-| `CEDS Property SHACL`               | Defines specific fields and option sets needed for a physical data model, translated from the CEDS ontology to SHACL format.                                                                   | [Self-hosted properties file](https://dev.cepi.state.mi.us/Ontology/PropertyShapes.ttl) |
+| `CEDS Property Shapes`               | Defines specific fields and option sets needed for a physical data model, translated from the CEDS ontology to SHACL format.                                                                   | [CEDS Property Shapes](https://github.com/CEDS-Collaborative-Exchange/CEDS-SHACL-JSON-LD-Framework/blob/develop/src/PropertyShapes.ttl) |
 
 # Background
 Data can be structured and moved in countless formats, but the JSON format has become one of the more popular options. Its relatively simple format (it is comprised of 6 primary data types) has facilitated widespread adoption within software and API development. There are, however, use cases such as the collection of administrative data that require the imposition of additional structure. This is where JSON for Linked Data, or JSON-LD, enters. JSON-LD allows the connection of JSON data to data model specifications. This data model allows for the definition of complex rulesets to govern the content of JSON-LD files. As should be expected, there are multiple standards available to define the data model that will govern JSON-LD content. The Shapes Constraint Language (SHACL) is particularly useful because it enables explicit data validation logic such as required fields or formats. 
