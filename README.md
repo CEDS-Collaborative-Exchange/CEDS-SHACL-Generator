@@ -1,4 +1,4 @@
-# CEDS/CEPI SHACL Shape Generator Tool
+# CEDS SHACL Shape Generator Tool
 
 # Overview
 
@@ -67,7 +67,7 @@ python create_shacl.py
 
 # Overarching Process
 # Overview
-This document serves as an entry point to users tasked with the creation of SHACL documents for the purpose of supporting CEPI data collection. This includes identifying the inputs, the outputs and the means for translating between the two. Additionally, an abbreviated background overview of major concepts is also provided.
+This document serves as an entry point to users tasked with the creation of SHACL documents for the purpose of supporting agency data collection. This includes identifying the inputs, the outputs and the means for translating between the two. Additionally, an abbreviated background overview of major concepts is also provided.
 
 # Workflow
 As shown below, the path to generating SHACL file(s) that will ensure data are collected in a consistent and accurate manner requires several steps.
@@ -76,7 +76,7 @@ As shown below, the path to generating SHACL file(s) that will ensure data are c
 
 | Workflow Item                       | Description | Example / URL  |
 |-------------------------------------|-------------|----------------|
-| `CEDS Ontology`                     | The CEDS ontology is the logical definition of the CEDS data model in RDF XML format. It includes fundamental concepts like a Person with a Name, as well as specific elements like gender.    | [CEDS open-source community](https://github.com/CEDStandards/CEDS-Ontology), [Self-hosted version](https://dev.cepi.state.mi.us/Ontology/ceds-ontology.rdf) |
+| `CEDS Ontology`                     | The CEDS ontology is the logical definition of the CEDS data model in RDF XML format. It includes fundamental concepts like a Person with a Name, as well as specific elements like gender.    | [CEDS open-source community](https://github.com/CEDStandards/CEDS-Ontology) |
 | `ETL Checklist`                     | Education authorities extend the CEDS data model by aligning fields from legacy systems to CEDS specifications. These extensions can be specified in an ETL checklist and translated to SHACL. | — |
 | `CEDS SHACL Generator`              | A separate working group developed a PHP-based tool to translate CEDS ontology properties into the SHACL format.                                                                               | [CEDS SHACL Generator](https://github.com/opensalt/CEDS-shacl-generator) |
 | `CEDS Property Shapes`               | Defines specific fields and option sets needed for a physical data model, translated from the CEDS ontology to SHACL format.                                                                   | [CEDS Property Shapes](https://github.com/CEDS-Collaborative-Exchange/CEDS-SHACL-JSON-LD-Framework/blob/develop/src/PropertyShapes.ttl) |
@@ -136,7 +136,7 @@ Given the above SHACL structure, a simplified version of a JSON-LD document for 
     }
 }
 ```
-In this example the SHACL file uses a coded indicator for first name (P000115) whereas the JSON-LD file uses a descriptive indicator (FirstName). This increases the human-readability of the JSON-LD files but does require provision of a crosswalk for the terms. An intermediary "context" file is used to map elements of a JSON-LD file to the corresponding element in the SHACL document. While technically out-of-scope for this documentation, users can [access it online](https://dev.cepi.state.mi.us/Ontology/context.json). This context file is also in JSON format:
+In this example the SHACL file uses a coded indicator for first name (P000115) whereas the JSON-LD file uses a descriptive indicator (FirstName). This increases the human-readability of the JSON-LD files but does require provision of a crosswalk for the terms. An intermediary "context" file is used to map elements of a JSON-LD file to the corresponding element in the SHACL document. While technically out-of-scope for this documentation, users can [access it online](https://github.com/CEDS-Collaborative-Exchange/CEDS-SHACL-JSON-LD-Framework/blob/develop/context.json). This context file is also in JSON format:
 
 ```json
 {
