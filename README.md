@@ -1,20 +1,65 @@
-# Introduction 
-TODO: Give a short introduction of your project. Let this section explain the objectives or the motivation behind this project. 
+CEDS/CEPI SHACL Shape Generator Tool
 
-# Getting Started
-TODO: Guide users through getting your code up and running on their own system. In this section you can talk about:
-1.	Installation process
-2.	Software dependencies
-3.	Latest releases
-4.	API references
+# Overview
 
-# Build and Test
-TODO: Describe and show how to build your code and run the tests. 
+This Python tool generates SHACL shape definitions from a list of RDF class and property identifiers. It is designed for use with the CEDS and Extension ontologies and outputs a filtered SHACL file.
 
-# Contribute
-TODO: Explain how other users and developers can contribute to make your code better. 
+# Input Requirements
 
-If you want to learn more about creating good readme files then refer the following [guidelines](https://docs.microsoft.com/en-us/azure/devops/repos/git/create-a-readme?view=azure-devops). You can also seek inspiration from the below readme files:
-- [ASP.NET Core](https://github.com/aspnet/Home)
-- [Visual Studio Code](https://github.com/Microsoft/vscode)
-- [Chakra Core](https://github.com/Microsoft/ChakraCore)
+The script expects a CSV input file containing Class IDs and Property IDs located in the ETL checklist in the following format:  
+namespace:ClassID, namespace:PropertyID  
+<br/>Each line defines a relationship between a class and a property. The script uses these relationships to build SHACL node and property shapes.
+
+# Functionality
+
+The script performs the following operations:
+
+1. Logging Setup
+
+- Configures a log file to track execution progress and errors.
+
+2. Ontology Initialization
+
+- Loads and parses CEDS and Extension ontology RDF and TTL files into an RDFLib graph.
+
+3. CSV Parsing
+
+- Reads the class-property mappings from the CSV and resolves each identifier to a full URI based on its namespace.
+
+4. SHACL Graph Creation
+
+- Builds a secondary RDF graph where SHACL NodeShapes and PropertyShapes are constructed based on the mappings and class hierarchy.
+
+5. Shape Enrichment
+
+- Adds SHACL-specific constraints such as ignored properties and property ranges. Where applicable, it references parent classes.
+
+6. Output
+
+- The final SHACL file is saved to a temporary location as 'Filtered_SHACL.ttl'.
+
+# File Prompts
+
+The script expects the following files when prompted:
+
+\- Ontology file for the CEDS ontology.
+
+\- Ontology file for the Extension ontology.
+
+\- Input CSV with Class and Property mappings.
+
+\- Extension Namespace
+
+\- Extension Namespace abbreviation
+
+# Output
+
+The tool generates a SHACL file containing NodeShapes and PropertyShapes filtered by the given mappings. The file is saved to:
+
+Filtered_SHACL.ttl
+
+# Execution
+
+The script can be run directly via command line:
+
+python create_shacl.py
