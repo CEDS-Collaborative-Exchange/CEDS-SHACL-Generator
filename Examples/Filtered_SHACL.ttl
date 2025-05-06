@@ -1,0 +1,99 @@
+@prefix ceds: <http://ceds.ed.gov/terms#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+ceds:PersonSexGenderShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:RecordStartDateTimeShape,
+        ceds:hasSexShape ;
+    sh:targetClass ceds:C200011 .
+
+ceds:PersonShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:RecordEndDateTimeShape,
+        ceds:RecordStartDateTimeShape,
+        ceds:hasPersonBirthShape,
+        ceds:hasPersonDemographicRaceShape,
+        ceds:hasPersonIdentificationShape,
+        ceds:hasPersonNameShape ;
+    sh:targetClass ceds:C200275 .
+
+ceds:CommittedByOrganizationShape a sh:PropertyShape ;
+    sh:class ceds:C200239 ;
+    sh:node ceds:OrganizationShape ;
+    sh:nodeKind sh:IRI ;
+    sh:path ceds:P200999 .
+
+ceds:PersonBirthShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:BirthdateShape,
+        ceds:RecordStartDateTimeShape ;
+    sh:targetClass ceds:C200376 .
+
+ceds:PersonDemographicRaceShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:RecordEndDateTimeShape,
+        ceds:RecordStartDateTimeShape,
+        ceds:hasRaceShape,
+        ceds:hasRecordStatusShape ;
+    sh:targetClass ceds:C200282 .
+
+ceds:PersonIdentificationShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:PersonIdentifierShape,
+        ceds:RecordEndDateTimeShape,
+        ceds:RecordStartDateTimeShape,
+        ceds:hasPersonIdentificationSystemShape,
+        ceds:hasPersonIdentificationTypeShape,
+        ceds:hasRecordStatusShape ;
+    sh:targetClass ceds:C200291 .
+
+ceds:PersonNameShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:FirstNameShape,
+        ceds:GenerationCodeOrSuffixShape,
+        ceds:LastOrSurnameShape,
+        ceds:MiddleNameShape,
+        ceds:RecordStartDateTimeShape ;
+    sh:targetClass ceds:C200377 .
+
+ceds:RecordStatusShape a sh:NodeShape ;
+    sh:closed true ;
+    sh:ignoredProperties ( rdf:type rdf:id rdf:value rdfs:label ) ;
+    sh:property ceds:CommittedByOrganizationShape,
+        ceds:RecordStartDateTimeShape ;
+    sh:targetClass ceds:C200411 .
+
+ceds:hasPersonBirthShape a sh:PropertyShape ;
+    sh:class ceds:C200376 ;
+    sh:node ceds:PersonBirthShape ;
+    sh:path ceds:P600335 .
+
+ceds:hasPersonDemographicRaceShape a sh:PropertyShape ;
+    sh:class ceds:C200282 ;
+    sh:node ceds:PersonDemographicRaceShape ;
+    sh:path ceds:P600035 .
+
+ceds:hasPersonIdentificationShape a sh:PropertyShape ;
+    sh:class ceds:C200291 ;
+    sh:node ceds:PersonIdentificationShape ;
+    sh:path ceds:P600049 .
+
+ceds:hasPersonNameShape a sh:PropertyShape ;
+    sh:class ceds:C200377 ;
+    sh:node ceds:PersonNameShape ;
+    sh:path ceds:P600336 .
+
+ceds:hasRecordStatusShape a sh:PropertyShape ;
+    sh:class ceds:C200411 ;
+    sh:node ceds:RecordStatusShape ;
+    sh:path ceds:P201001 .
+

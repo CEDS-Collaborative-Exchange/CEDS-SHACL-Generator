@@ -1,0 +1,18 @@
+@prefix ceds: <http://ceds.ed.gov/terms#> .
+@prefix cepi: <http://dev.cepi.state.mi.us/Person/> .
+@prefix dc: <http://purl.org/dc/elements/1.1/> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+cepi:NI001571100001 a ceds:C001571,
+        owl:NamedIndividual,
+        skos:Concept ;
+    rdfs:label "MOECS generated system key for a unique educator" ;
+    dc:creator "Center for Education Performance and Information" ;
+    dc:identifier "NI001571100001" ;
+    skos:definition "This Staff Identifier is assigned by MOECS as a system key." ;
+    skos:inScheme ceds:C001571 ;
+    skos:notation "EducatorID" ;
+    skos:prefLabel "MOECS generated system key for a unique educator" .
+
