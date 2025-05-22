@@ -1,41 +1,22 @@
-import logging
 from pathlib import Path
-import re
-import os
 import csv
 import rdflib
 from rdflib import Graph, URIRef, Literal, Namespace, BNode
 from rdflib.namespace import RDF, RDFS, SH, XSD, SDO, SKOS
 from rdflib.collection import Collection
+from logging_config import setup_logging
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)
-
-formatter = logging.Formatter('[%(asctime)s] [%(levelname)-8s]: %(message)s')
-console_handler.setFormatter(formatter)
-
-logger.addHandler(console_handler)
+logger = setup_logging()
 
 namespaces = {}
 
 def destroy_logger():
     global logger
     while logger.hasHandlers():
-        handler = logger.handlers[0]
-        handler.close()
-        logger.removeHandler(handler)
-
-def setup_file_logging():
-    log_file = Path.cwd() / "ceds_ontology.log"
-    try:
-        file_handler = logging.FileHandler(log_file, 'w')
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-    except Exception as e:
-        logger.exception(f"Failed to configure file logging: {e}")
+        handler = logger.handlers[0] if logger.handlers else None
+        if handler:
+            handler.close()
+            logger.removeHandler(handler)
 
 def get_namespace(prefix):
     return namespaces.get(prefix, Namespace(f"http://unknown.org/{prefix}#"))
@@ -43,8 +24,18 @@ def get_namespace(prefix):
 def initialize_graphs(ceds_path, extension_path):
     logger.info("g initializing")
     g = Graph()
-    g.parse(ceds_path, format=rdflib.util.guess_format(ceds_path))
-    g.parse(extension_path, format=rdflib.util.guess_format(extension_path))
+    try:
+        # Parse the CEDS Ontology file
+        logger.info(f"Parsing CEDS Ontology file: {ceds_path}")
+        g.parse(ceds_path, format=rdflib.util.guess_format(ceds_path))
+        if extension_path:
+            # Parse the Extension Ontology file
+            logger.info(f"Parsing Extension Ontology file: {extension_path}")
+            g.parse(extension_path, format=rdflib.util.guess_format(extension_path))
+    except Exception as e:
+        logger.exception(f"Failed to parse RDF files: {e}")
+        raise
+
     logger.info("g initialized")
 
     logger.info("g1 initializing")
@@ -205,7 +196,6 @@ def prompt_for_file(prompt_text, required=True):
             logger.warning(f"File not found: {path}\nPlease enter a valid file path.\n")
 
 def main():
-    setup_file_logging()
     logger.info("Starting script")
     ceds_path = prompt_for_file("Enter full path to CEDS Ontology: ")
     extension_path = prompt_for_file("Enter full path to an extension Ontology: ", required=False)
