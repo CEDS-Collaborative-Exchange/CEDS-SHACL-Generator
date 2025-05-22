@@ -1,29 +1,35 @@
 import streamlit as st
+import sys
 from pathlib import Path
-from create_shacl import (
+
+# Add the parent directory to sys.path
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from utils.SHACL import (
     initialize_graphs,
-    get_filter_class_ids_from_file,
     get_parent_classes,
     create_node_shape,
     create_property_shapes,
+    get_filter_class_ids_from_file,
     serialize_graph,
-    destroy_logger,
     namespaces,
 )
+from utils.logging_config import setup_logging, destroy_logger
 from rdflib import Namespace, Graph
 from pyvis.network import Network
-from logging_config import setup_logging
+from io import BytesIO
+import shutil
 
 logger = setup_logging()
 
-def visualize_shacl(output_file):
+def visualize_shacl(output_data):
     """Generate a hierarchical visualization of the SHACL shapes."""
-    logger.debug(f"Parsing SHACL output file: {output_file}")
+    logger.debug("Parsing SHACL output data")
     g = Graph()
     try:
-        g.parse(output_file, format="turtle")
+        g.parse(data=output_data.getvalue(), format="turtle")
     except Exception as e:
-        logger.error(f"Failed to parse SHACL output file: {e}")
+        logger.error(f"Failed to parse SHACL output data: {e}")
         raise
 
     net = Network(height="750px", width="100%", directed=True)
@@ -68,13 +74,23 @@ def visualize_shacl(output_file):
     logger.debug("SHACL visualization saved as shacl_visualization.html")
     return "shacl_visualization.html"
 
+def get_rdf_format(file_name):
+    """Determine the RDF format based on the file extension."""
+    extension = Path(file_name).suffix.lower()
+    if extension in [".ttl"]:
+        return "turtle"
+    elif extension in [".rdf", ".xml"]:
+        return "xml"
+    else:
+        raise ValueError(f"Unsupported file extension: {extension}")
+
 def main():
     st.title("CEDS SHACL Generator")
     st.write("Generate SHACL shapes from CEDS Ontology and extension files.")
 
     # File inputs
-    ceds_path = st.file_uploader("Upload CEDS Ontology file", type=["ttl", "rdf", "xml"])
-    extension_path = st.file_uploader("Upload Extension Ontology file (optional)", type=["ttl", "rdf", "xml"])
+    ceds_file = st.file_uploader("Upload CEDS Ontology file", type=["ttl", "rdf", "xml"])
+    extension_file = st.file_uploader("Upload Extension Ontology file (optional)", type=["ttl", "rdf", "xml"])
     filter_file = st.file_uploader("Upload Filter IDs file (TXT)", type=["txt"])
 
     # Namespace inputs
@@ -83,34 +99,22 @@ def main():
 
     # Run button
     if st.button("Generate SHACL"):
-        if not ceds_path or not filter_file:
+        if not ceds_file or not filter_file:
             st.error("Please upload both the CEDS Ontology file and the Filter IDs file.")
             return
 
-        # Determine file extensions based on uploaded file types
-        ceds_extension = Path(ceds_path.name).suffix
-        extension_extension = Path(extension_path.name).suffix if extension_path else None
+        # Read files into memory
+        ceds_data = BytesIO(ceds_file.read())
+        extension_data = BytesIO(extension_file.read()) if extension_file else None
+        filter_data = BytesIO(filter_file.read())
 
-        # Save uploaded files to temporary paths with appropriate extensions
-        ceds_temp_path = Path(f"ceds_temp{ceds_extension}")
-        extension_temp_path = Path(f"extension_temp{extension_extension}") if extension_path else None
-        filter_temp_path = Path("filter_temp.txt")
-
-        with open(ceds_temp_path, "wb") as f:
-            ceds_content = ceds_path.read()
-            logger.debug(f"Saving CEDS Ontology file to {ceds_temp_path}")
-            f.write(ceds_content)
-
-        if extension_path:
-            with open(extension_temp_path, "wb") as f:
-                extension_content = extension_path.read()
-                logger.debug(f"Saving Extension Ontology file to {extension_temp_path}")
-                f.write(extension_content)
-
-        with open(filter_temp_path, "wb") as f:
-            filter_content = filter_file.read()
-            logger.debug(f"Saving Filter file to {filter_temp_path}")
-            f.write(filter_content)
+        # Determine RDF formats
+        try:
+            ceds_format = get_rdf_format(ceds_file.name)
+            extension_format = get_rdf_format(extension_file.name) if extension_file else None
+        except ValueError as e:
+            st.error(str(e))
+            return
 
         # Set up namespaces
         namespaces["ceds"] = Namespace("http://ceds.ed.gov/terms#")
@@ -120,11 +124,15 @@ def main():
         # Run the SHACL generation process
         try:
             logger.info("Initializing graphs...")
-            g, g1 = initialize_graphs(ceds_temp_path, extension_temp_path)
+            g = Graph()
+            g1 = Graph()
+            g.parse(data=ceds_data.getvalue(), format=ceds_format)
+            if extension_data:
+                g.parse(data=extension_data.getvalue(), format=extension_format)
             logger.info("Graphs initialized successfully.")
 
             logger.info("Reading filter file...")
-            class_property_map = get_filter_class_ids_from_file(filter_temp_path)
+            class_property_map = get_filter_class_ids_from_file(filter_data)
             if not class_property_map:
                 logger.warning("No class-property mappings found. Exiting.")
                 st.warning("No class-property mappings found. Exiting.")
@@ -137,21 +145,21 @@ def main():
                 create_property_shapes(g1, g, class_uri, property_uris, class_property_map, shacl_namespace)
 
             # Serialize the output
-            output_file = Path("Filtered_SHACL.ttl")
-            logger.info(f"Serializing SHACL shapes to {output_file}")
-            serialize_graph(g, g1)
+            output_data = BytesIO()
+            g1.serialize(destination=output_data, format="turtle")
+            output_data.seek(0)
             st.success("SHACL generation complete!")
 
             # Add visualization
             logger.info("Generating SHACL visualization...")
-            visualization_file = visualize_shacl(output_file)
+            visualization_file = visualize_shacl(output_data)
             st.write("SHACL Visualization:")
             st.components.v1.html(open(visualization_file, "r").read(), height=800)
 
             # Add download button
             st.download_button(
                 label="Download SHACL File",
-                data=output_file.read_text(),
+                data=output_data.getvalue(),
                 file_name="Filtered_SHACL.ttl",
                 mime="text/turtle",
             )
