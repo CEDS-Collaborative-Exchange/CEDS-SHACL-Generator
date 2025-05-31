@@ -61,11 +61,23 @@ def get_parent_classes(g, class_property_map):
     return parent_classes
 
 def create_node_shape(g1, g, class_uri, parent_classes, shacl_namespace):
-    notation = next(g.objects(URIRef(class_uri), SKOS.notation))
+    """Create a SHACL node shape for a given class."""
+    notation = next(g.objects(URIRef(class_uri), SKOS.notation), None)
+    if not notation:
+        logger.warning(f"No skos:notation found for class URI: {class_uri}")
+        return
 
+    # Use the SHACL namespace to create the node shape URI
     node_title = URIRef(f"{shacl_namespace}{notation}Shape")
     g1.add((node_title, RDF.type, SH.NodeShape))
-    g1.add((node_title, SH.targetClass, URIRef(class_uri)))
+
+    # Ensure the targetClass uses the bound namespace
+    class_namespace = namespaces.get(class_uri.split("#")[0], None)
+    if class_namespace:
+        target_class = URIRef(f"{class_namespace}{class_uri.split('#')[-1]}")
+        g1.add((node_title, SH.targetClass, target_class))
+    else:
+        g1.add((node_title, SH.targetClass, URIRef(class_uri)))  # Fallback to full URI if namespace is not found
 
     if class_uri in parent_classes:
         g1.add((node_title, SH.closed, Literal(True, datatype=XSD.boolean)))
@@ -77,6 +89,7 @@ def create_node_shape(g1, g, class_uri, parent_classes, shacl_namespace):
     g1.add((node_title, SH.ignoredProperties, ignored_list_node))
 
 def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, shacl_namespace):
+    """Create SHACL property shapes for a given class and its properties."""
     class_notation = next(g.objects(URIRef(class_uri), SKOS.notation), None)
     if not class_notation:
         logger.warning(f"No skos:notation found for class URI: {class_uri}")
@@ -90,55 +103,27 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
         if not prop_notation:
             logger.warning(f"No skos:notation found for property URI: {prop_uri}")
-            continue  
+            continue
 
-        for prefix, uri in g.namespaces():
-            if str(prop_uri).startswith(str(uri)):
-                prop_namespace = uri
-                break
-        else:
-            prop_namespace = str(prop_uri).rsplit("#", 1)[0] + "#"
+        # Use the SHACL namespace to create the property shape URI
+        prop_shape = URIRef(f"{shacl_namespace}{prop_notation}Shape")
 
-        prop_shape = URIRef(f"{prop_namespace}{prop_notation}Shape")
+        # Add the property shape to the class node shape
+        g1.add((class_node_title, SH.property, prop_shape))
 
-        # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
-        classes = g.subjects(RDF.type, RDFS.Class)
+        # Check if the range is a class and not a datatype
         for range_uri in ranges:
-            # Add the property shape to the class node shape
-            g1.add((class_node_title, SH.property, prop_shape))
+            if "#C" in str(range_uri):  # Example condition for identifying classes
+                g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                g1.add((prop_shape, SH.path, URIRef(prop_uri)))  # Ensure the path uses the bound namespace
+                g1.add((prop_shape, SH["class"], URIRef(range_uri)))  # Ensure the class uses the bound namespace
 
-            # Check if the range is a class and not a datatype
-            if "#C" in str(range_uri):
-                option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
-                if len(option_set) > 0:
-                    if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                        option_set_node = BNode()
-                        Collection(g1, option_set_node, option_set)
-                        g1.add((prop_shape, SH["in"], option_set_node))
-
-                elif range_uri in classes:
-                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
-                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
-
-                    range_notation = next(g.objects(range_uri, SKOS.notation), None)
-                    if not range_notation:
-                        logger.warning(f"No skos:notation found for range URI: {range_uri}")
-                        continue
-
-                    for prefix, uri in g.namespaces():
-                        if str(range_uri).startswith(str(uri)):
-                            range_namespace = uri
-                            break
-                    else:
-                        range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
-
-                    range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
-
-                    g1.add((prop_shape, SH["class"], URIRef(range_uri)))
+                range_notation = next(g.objects(range_uri, SKOS.notation), None)
+                if range_notation:
+                    range_shape = URIRef(f"{shacl_namespace}{range_notation}Shape")
                     g1.add((prop_shape, SH["node"], range_shape))
-
-                    if str(range_uri) not in class_property_map:
-                        g1.add((prop_shape, SH.nodeKind, SH.IRI))
+                else:
+                    logger.warning(f"No skos:notation found for range URI: {range_uri}")
 
 def initialize_graphs(ceds_path, extension_path):
     """Initialize RDF graphs for CEDS Ontology and Extension Ontology."""
