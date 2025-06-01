@@ -5,6 +5,8 @@ import logging
 import csv
 from pathlib import Path
 from io import BytesIO
+from utils.common import add_namespace, get_rdf_format, get_label, get_properties_for_class
+import streamlit as st
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +148,7 @@ def initialize_graphs(ceds_path, extension_path):
     # Create a new graph for SHACL shapes
     g1 = Graph()
     for prefix, uri in namespaces.items():
+        add_namespace(namespaces, prefix, uri)
         g1.namespace_manager.bind(prefix, uri, override=True)
     g1.namespace_manager.bind("sh", SH, override=True)
     g1.namespace_manager.bind("rdf", RDF, override=True)
@@ -154,3 +157,104 @@ def initialize_graphs(ceds_path, extension_path):
     logger.info("SHACL graph initialized.")
 
     return g, g1
+
+def load_ontologies(uploaded_files, namespace_data):
+    """Load all uploaded ontology files into the combined RDF graph."""
+    combined_graph = Graph()
+    for file, (namespace_url, namespace_shortname) in zip(uploaded_files, namespace_data):
+        try:
+            rdf_format = get_rdf_format(file.name)
+            if not rdf_format:
+                raise ValueError(f"Unsupported file format for {file.name}.")
+            temp_graph = Graph()
+            temp_graph.parse(data=file.read(), format=rdf_format)
+            # Dynamically bind namespaces provided by the user
+            add_namespace(namespaces, namespace_shortname, namespace_url)
+            combined_graph.namespace_manager.bind(namespace_shortname, Namespace(namespace_url))  # Bind namespace
+            combined_graph += temp_graph  # Merge the file's graph into the combined graph
+            st.success(f"Ontology file '{file.name}' loaded successfully with namespace '{namespace_shortname}'.")
+        except Exception as e:
+            st.error(f"Failed to load ontology file '{file.name}': {e}")
+    return combined_graph
+
+def display_classes_and_properties():
+    """Display classes and their properties in a tree-like structure."""
+    if "combined_graph" not in st.session_state or len(st.session_state.combined_graph) == 0:
+        st.info("No ontology files loaded. Please upload files.")
+        return
+
+    # Initialize session state for class-property mappings
+    if "class_property_map" not in st.session_state:
+        st.session_state.class_property_map = {}
+
+    # Get all classes in the combined graph and sort them alphabetically by label
+    classes = list(st.session_state.combined_graph.subjects(RDF.type, RDFS.Class))
+    sorted_classes = sorted(classes, key=lambda class_uri: get_label(class_uri, st.session_state.combined_graph).lower())
+
+    for class_uri in sorted_classes:
+        class_label = get_label(class_uri, st.session_state.combined_graph)
+        properties = get_properties_for_class(class_uri, st.session_state.combined_graph)
+
+        with st.expander(f"Class: {class_label}"):
+            # Determine if all properties are selected for this class
+            all_selected = all(
+                prop in st.session_state.class_property_map.get(class_uri, set())
+                for prop in properties
+            )
+
+            # Class-level checkbox to select/deselect all properties
+            select_all_key = f"select_all_{class_uri}"
+            select_all = st.checkbox(f"Select All Properties", value=all_selected, key=select_all_key)
+
+            # Update property selection based on the class-level checkbox
+            if select_all:
+                st.session_state.class_property_map[class_uri] = set(properties)
+            else:
+                st.session_state.class_property_map[class_uri] = set()
+
+            # Individual property checkboxes
+            for prop in properties:
+                prop_label = get_label(prop, st.session_state.combined_graph)
+                key = f"{class_uri}:{prop}"
+                is_checked = prop in st.session_state.class_property_map.get(class_uri, set())
+                if st.checkbox(f"{prop_label}", key=key, value=is_checked):
+                    st.session_state.class_property_map.setdefault(class_uri, set()).add(prop)
+                else:
+                    st.session_state.class_property_map.get(class_uri, set()).discard(prop)
+
+            # Remove the class from the map if no properties are selected
+            if not st.session_state.class_property_map[class_uri]:
+                del st.session_state.class_property_map[class_uri]
+
+def update_class_property_map(class_uri, prop, key):
+    """Update the class-property mappings in session state."""
+    if st.session_state[key]:
+        st.session_state.class_property_map.setdefault(str(class_uri), set()).add(str(prop))
+    else:
+        st.session_state.class_property_map.get(str(class_uri), set()).discard(str(prop))
+
+def generate_shacl():
+    """Generate SHACL shapes from the selected class-property mappings."""
+    if not st.session_state.class_property_map:
+        st.warning("No class-property mappings selected.")
+        return None
+
+    g1 = Graph()
+    # Dynamically bind all namespaces from the `namespaces` dictionary
+    for prefix, namespace in namespaces.items():
+        g1.namespace_manager.bind(prefix, namespace)  # Bind namespaces to the SHACL graph
+
+    shacl_namespace = namespaces.get("ceds", Namespace("http://ceds.ed.gov/terms#"))  # Default to CEDS namespace
+    for class_uri, properties in st.session_state.class_property_map.items():
+        if properties:  # Only include classes with properties
+            create_node_shape(g1, st.session_state.combined_graph, class_uri, {}, shacl_namespace)
+            create_property_shapes(g1, st.session_state.combined_graph, class_uri, properties, st.session_state.class_property_map, shacl_namespace)
+
+    # Serialize the SHACL graph to a string
+    try:
+        shacl_content = g1.serialize(format="turtle")
+        st.success("SHACL shapes generated successfully!")
+        return shacl_content
+    except Exception as e:
+        st.error(f"Failed to generate SHACL: {e}")
+        return None
