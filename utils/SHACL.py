@@ -5,6 +5,9 @@ import logging
 import csv
 from pathlib import Path
 from io import BytesIO
+from utils.common import add_namespace, get_rdf_format, get_label, get_properties_for_class
+import streamlit as st
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +64,23 @@ def get_parent_classes(g, class_property_map):
     return parent_classes
 
 def create_node_shape(g1, g, class_uri, parent_classes, shacl_namespace):
-    notation = next(g.objects(URIRef(class_uri), SKOS.notation))
+    """Create a SHACL node shape for a given class."""
+    notation = next(g.objects(URIRef(class_uri), SKOS.notation), None)
+    if not notation:
+        logger.warning(f"No skos:notation found for class URI: {class_uri}")
+        return
 
+    # Use the SHACL namespace to create the node shape URI
     node_title = URIRef(f"{shacl_namespace}{notation}Shape")
     g1.add((node_title, RDF.type, SH.NodeShape))
-    g1.add((node_title, SH.targetClass, URIRef(class_uri)))
+
+    # Ensure the targetClass uses the bound namespace
+    class_namespace = namespaces.get(class_uri.split("#")[0], None)
+    if class_namespace:
+        target_class = URIRef(f"{class_namespace}{class_uri.split('#')[-1]}")
+        g1.add((node_title, SH.targetClass, target_class))
+    else:
+        g1.add((node_title, SH.targetClass, URIRef(class_uri)))  # Fallback to full URI if namespace is not found
 
     if class_uri in parent_classes:
         g1.add((node_title, SH.closed, Literal(True, datatype=XSD.boolean)))
@@ -77,6 +92,7 @@ def create_node_shape(g1, g, class_uri, parent_classes, shacl_namespace):
     g1.add((node_title, SH.ignoredProperties, ignored_list_node))
 
 def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, shacl_namespace):
+    """Create SHACL property shapes for a given class and its properties."""
     class_notation = next(g.objects(URIRef(class_uri), SKOS.notation), None)
     if not class_notation:
         logger.warning(f"No skos:notation found for class URI: {class_uri}")
@@ -90,55 +106,27 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
         if not prop_notation:
             logger.warning(f"No skos:notation found for property URI: {prop_uri}")
-            continue  
+            continue
 
-        for prefix, uri in g.namespaces():
-            if str(prop_uri).startswith(str(uri)):
-                prop_namespace = uri
-                break
-        else:
-            prop_namespace = str(prop_uri).rsplit("#", 1)[0] + "#"
+        # Use the SHACL namespace to create the property shape URI
+        prop_shape = URIRef(f"{shacl_namespace}{prop_notation}Shape")
 
-        prop_shape = URIRef(f"{prop_namespace}{prop_notation}Shape")
+        # Add the property shape to the class node shape
+        g1.add((class_node_title, SH.property, prop_shape))
 
-        # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
-        classes = g.subjects(RDF.type, RDFS.Class)
+        # Check if the range is a class and not a datatype
         for range_uri in ranges:
-            # Add the property shape to the class node shape
-            g1.add((class_node_title, SH.property, prop_shape))
+            if "#C" in str(range_uri):  # Example condition for identifying classes
+                g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                g1.add((prop_shape, SH.path, URIRef(prop_uri)))  # Ensure the path uses the bound namespace
+                g1.add((prop_shape, SH["class"], URIRef(range_uri)))  # Ensure the class uses the bound namespace
 
-            # Check if the range is a class and not a datatype
-            if "#C" in str(range_uri):
-                option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
-                if len(option_set) > 0:
-                    if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                        option_set_node = BNode()
-                        Collection(g1, option_set_node, option_set)
-                        g1.add((prop_shape, SH["in"], option_set_node))
-
-                elif range_uri in classes:
-                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
-                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
-
-                    range_notation = next(g.objects(range_uri, SKOS.notation), None)
-                    if not range_notation:
-                        logger.warning(f"No skos:notation found for range URI: {range_uri}")
-                        continue
-
-                    for prefix, uri in g.namespaces():
-                        if str(range_uri).startswith(str(uri)):
-                            range_namespace = uri
-                            break
-                    else:
-                        range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
-
-                    range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
-
-                    g1.add((prop_shape, SH["class"], URIRef(range_uri)))
+                range_notation = next(g.objects(range_uri, SKOS.notation), None)
+                if range_notation:
+                    range_shape = URIRef(f"{shacl_namespace}{range_notation}Shape")
                     g1.add((prop_shape, SH["node"], range_shape))
-
-                    if str(range_uri) not in class_property_map:
-                        g1.add((prop_shape, SH.nodeKind, SH.IRI))
+                else:
+                    logger.warning(f"No skos:notation found for range URI: {range_uri}")
 
 def initialize_graphs(ceds_path, extension_path):
     """Initialize RDF graphs for CEDS Ontology and Extension Ontology."""
@@ -161,6 +149,7 @@ def initialize_graphs(ceds_path, extension_path):
     # Create a new graph for SHACL shapes
     g1 = Graph()
     for prefix, uri in namespaces.items():
+        add_namespace(namespaces, prefix, uri)
         g1.namespace_manager.bind(prefix, uri, override=True)
     g1.namespace_manager.bind("sh", SH, override=True)
     g1.namespace_manager.bind("rdf", RDF, override=True)
@@ -169,3 +158,129 @@ def initialize_graphs(ceds_path, extension_path):
     logger.info("SHACL graph initialized.")
 
     return g, g1
+
+def load_ontologies(uploaded_files, namespace_data):
+    """Load all uploaded ontology files into the combined RDF graph."""
+    combined_graph = Graph()
+    for file, (namespace_url, namespace_shortname) in zip(uploaded_files, namespace_data):
+        try:
+            rdf_format = get_rdf_format(file.name)
+            if not rdf_format:
+                raise ValueError(f"Unsupported file format for {file.name}.")
+            temp_graph = Graph()
+            temp_graph.parse(data=file.read(), format=rdf_format)
+            # Dynamically bind namespaces provided by the user
+            add_namespace(namespaces, namespace_shortname, namespace_url)
+            combined_graph.namespace_manager.bind(namespace_shortname, Namespace(namespace_url))  # Bind namespace
+            combined_graph += temp_graph  # Merge the file's graph into the combined graph
+            st.success(f"Ontology file '{file.name}' loaded successfully with namespace '{namespace_shortname}'.")
+        except Exception as e:
+            st.error(f"Failed to load ontology file '{file.name}': {e}")
+    return combined_graph
+
+def display_classes_and_properties():
+    """Display classes and their properties in a tree-like structure."""
+    if "combined_graph" not in st.session_state or len(st.session_state.combined_graph) == 0:
+        st.info("No ontology files loaded. Please upload files.")
+        return
+
+    # Initialize session state for class-property mappings
+    if "class_property_map" not in st.session_state:
+        st.session_state.class_property_map = {}
+
+    # Get all classes in the combined graph and sort them alphabetically by label
+    classes = list(st.session_state.combined_graph.subjects(RDF.type, RDFS.Class))
+    sorted_classes = sorted(classes, key=lambda class_uri: get_label(class_uri, st.session_state.combined_graph).lower())
+
+    for class_uri in sorted_classes:
+        class_label = get_label(class_uri, st.session_state.combined_graph)
+        properties = get_properties_for_class(class_uri, st.session_state.combined_graph)
+
+        with st.expander(f"Class: {class_label}"):
+            # Determine if all properties are selected for this class
+            all_selected = all(
+                prop in st.session_state.class_property_map.get(class_uri, set())
+                for prop in properties
+            )
+
+            # Class-level checkbox to select/deselect all properties
+            select_all_key = f"select_all_{class_uri}"
+            select_all = st.checkbox(f"Select All Properties", value=all_selected, key=select_all_key)
+
+            # Update property selection based on the class-level checkbox
+            if select_all:
+                st.session_state.class_property_map[class_uri] = set(properties)
+            else:
+                st.session_state.class_property_map[class_uri] = set()
+
+            # Individual property checkboxes
+            for prop in properties:
+                prop_label = get_label(prop, st.session_state.combined_graph)
+                key = f"{class_uri}:{prop}"
+                is_checked = prop in st.session_state.class_property_map.get(class_uri, set())
+                if st.checkbox(f"{prop_label}", key=key, value=is_checked):
+                    st.session_state.class_property_map.setdefault(class_uri, set()).add(prop)
+                else:
+                    st.session_state.class_property_map.get(class_uri, set()).discard(prop)
+
+            # Remove the class from the map if no properties are selected
+            if not st.session_state.class_property_map[class_uri]:
+                del st.session_state.class_property_map[class_uri]
+
+def update_class_property_map(class_uri, prop, key):
+    """Update the class-property mappings in session state."""
+    if st.session_state[key]:
+        st.session_state.class_property_map.setdefault(str(class_uri), set()).add(str(prop))
+    else:
+        st.session_state.class_property_map.get(str(class_uri), set()).discard(str(prop))
+
+def generate_shacl():
+    """Generate SHACL shapes from the selected class-property mappings."""
+    if not st.session_state.class_property_map:
+        st.warning("No class-property mappings selected.")
+        return None
+
+    g1 = Graph()
+    # Dynamically bind all namespaces from the `namespaces` dictionary
+    for prefix, namespace in namespaces.items():
+        g1.namespace_manager.bind(prefix, namespace)  # Bind namespaces to the SHACL graph
+
+    shacl_namespace = namespaces.get("ceds", Namespace("http://ceds.ed.gov/terms#"))  # Default to CEDS namespace
+    for class_uri, properties in st.session_state.class_property_map.items():
+        if properties:  # Only include classes with properties
+            create_node_shape(g1, st.session_state.combined_graph, class_uri, {}, shacl_namespace)
+            create_property_shapes(g1, st.session_state.combined_graph, class_uri, properties, st.session_state.class_property_map, shacl_namespace)
+
+    # Serialize the SHACL graph to a string
+    try:
+        shacl_content = g1.serialize(format="turtle")
+        st.success("SHACL shapes generated successfully!")
+        return shacl_content
+    except Exception as e:
+        st.error(f"Failed to generate SHACL: {e}")
+        return None
+
+
+def generate_sample_jsonld(shacl_content):
+    """Generate a sample JSON-LD document based on the SHACL shapes."""
+    try:
+        g = Graph()
+        g.parse(data=shacl_content, format="turtle")
+
+        sample_jsonld = {}
+        for node_shape in g.subjects(RDF.type, SH.NodeShape):
+            target_class = next(g.objects(node_shape, SH.targetClass), None)
+            if target_class:
+                class_name = str(target_class).split("/")[-1]
+                sample_jsonld[class_name] = {}
+                for prop_shape in g.objects(node_shape, SH.property):
+                    path = next(g.objects(prop_shape, SH.path), None)
+                    if path:
+                        property_name = str(path).split("/")[-1]
+                        sample_jsonld[class_name][property_name] = "Sample Value"
+
+        return json.dumps(sample_jsonld, indent=4)
+    except Exception as e:
+        st.error(f"Failed to generate JSON-LD: {e}")
+        return None
+
