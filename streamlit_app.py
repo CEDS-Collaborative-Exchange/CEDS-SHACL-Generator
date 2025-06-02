@@ -1,41 +1,25 @@
 import streamlit as st
-from pathlib import Path
-from rdflib import Graph, RDFS, URIRef
-from rdflib.namespace import RDF, SKOS, Namespace, SH  # Import SH namespace
+from rdflib import Graph
+from rdflib.namespace import RDF, Namespace, SH  # Import SH namespace
 from utils.SHACL import (
     namespaces,
     load_ontologies,
     display_classes_and_properties,
     generate_shacl,
+    generate_sample_jsonld
 )
 from streamlit_ace import st_ace
-import json
+
+# Set page configuration to collapse the sidebar by default, set the tab title, and add an icon
+st.set_page_config(
+    page_title="OM",  # Set the tab title to "OM"
+    page_icon="🌐",  # Use a globe icon to represent ontology
+    layout="wide",
+    initial_sidebar_state="collapsed"  # Collapse the sidebar by default
+)
 
 # Add Schema.org namespace
 SDO = Namespace("https://schema.org/")
-
-def generate_sample_jsonld(shacl_content):
-    """Generate a sample JSON-LD document based on the SHACL shapes."""
-    try:
-        g = Graph()
-        g.parse(data=shacl_content, format="turtle")
-
-        sample_jsonld = {}
-        for node_shape in g.subjects(RDF.type, SH.NodeShape):
-            target_class = next(g.objects(node_shape, SH.targetClass), None)
-            if target_class:
-                class_name = str(target_class).split("/")[-1]
-                sample_jsonld[class_name] = {}
-                for prop_shape in g.objects(node_shape, SH.property):
-                    path = next(g.objects(prop_shape, SH.path), None)
-                    if path:
-                        property_name = str(path).split("/")[-1]
-                        sample_jsonld[class_name][property_name] = "Sample Value"
-
-        return json.dumps(sample_jsonld, indent=4)
-    except Exception as e:
-        st.error(f"Failed to generate JSON-LD: {e}")
-        return None
 
 def ontology_manager():
     """Main page of the application."""
@@ -74,6 +58,7 @@ def ontology_manager():
     )
 
     st.title("Ontology Manager")
+    
 
     # Create a three-column layout
     left_col, middle_col, right_col = st.columns([2, 4, 4], gap="small")
@@ -138,7 +123,6 @@ def ontology_manager():
             st.info("Generate SHACL first to create a sample JSON-LD document.")
 
 def app():
-    """Streamlit multi-page application."""
     # Initialize session state variables
     if "class_property_map" not in st.session_state:
         st.session_state.class_property_map = {}

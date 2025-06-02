@@ -7,6 +7,7 @@ from pathlib import Path
 from io import BytesIO
 from utils.common import add_namespace, get_rdf_format, get_label, get_properties_for_class
 import streamlit as st
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -258,3 +259,28 @@ def generate_shacl():
     except Exception as e:
         st.error(f"Failed to generate SHACL: {e}")
         return None
+
+
+def generate_sample_jsonld(shacl_content):
+    """Generate a sample JSON-LD document based on the SHACL shapes."""
+    try:
+        g = Graph()
+        g.parse(data=shacl_content, format="turtle")
+
+        sample_jsonld = {}
+        for node_shape in g.subjects(RDF.type, SH.NodeShape):
+            target_class = next(g.objects(node_shape, SH.targetClass), None)
+            if target_class:
+                class_name = str(target_class).split("/")[-1]
+                sample_jsonld[class_name] = {}
+                for prop_shape in g.objects(node_shape, SH.property):
+                    path = next(g.objects(prop_shape, SH.path), None)
+                    if path:
+                        property_name = str(path).split("/")[-1]
+                        sample_jsonld[class_name][property_name] = "Sample Value"
+
+        return json.dumps(sample_jsonld, indent=4)
+    except Exception as e:
+        st.error(f"Failed to generate JSON-LD: {e}")
+        return None
+
