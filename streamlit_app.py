@@ -70,7 +70,7 @@ def ontology_manager():
         namespace_data = []
         if uploaded_files:
             for file in uploaded_files:
-                namespace_url = st.text_input(f"Namespace URL for {file.name}", "http://ceds.edu.gov/terms#")
+                namespace_url = st.text_input(f"Namespace URL for {file.name}", "http://ceds.ed.gov/terms#")
                 namespace_shortname = st.text_input(f"Namespace Shortname for {file.name}", "ceds")
                 namespace_data.append((namespace_url, namespace_shortname))
 
