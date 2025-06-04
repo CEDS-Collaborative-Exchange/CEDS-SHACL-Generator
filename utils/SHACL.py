@@ -185,8 +185,6 @@ def display_classes_and_properties():
         return
 
     # Initialize session state for class-property mappings
-    if "class_property_map" not in st.session_state:
-        st.session_state.class_property_map = {}
 
     # Get all classes in the combined graph and sort them alphabetically by label
     classes = list(st.session_state.combined_graph.subjects(RDF.type, RDFS.Class))
