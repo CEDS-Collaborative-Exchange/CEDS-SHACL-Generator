@@ -29,13 +29,13 @@ def ontology_manager():
         <style>
         /* Set the main container to span the full width */
         .stMainBlockContainer {
-            max-width: 95% !important;
+            max-width: 100% !important;
             padding-left: 10px !important;
             padding-right: 10px !important;
         }
         /* Adjust the layout for the three-column design */
         .stColumn {
-            display: flex;
+            
             justify-content: space-between;
             padding: 10px;
             gap: 10px;
@@ -51,6 +51,9 @@ def ontology_manager():
         /* Target the Ace editor container */
         .st-emotion-cache-13o7eu2 {
             width: 100% !important;
+        }
+        .stMainBlockContainer {
+            overflow: hidden;
         }
         </style>
         """,
