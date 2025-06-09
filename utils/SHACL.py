@@ -82,8 +82,7 @@ def create_node_shape(g1, g, class_uri, parent_classes, shacl_namespace):
     else:
         g1.add((node_title, SH.targetClass, URIRef(class_uri)))  # Fallback to full URI if namespace is not found
 
-    if class_uri in parent_classes:
-        g1.add((node_title, SH.closed, Literal(True, datatype=XSD.boolean)))
+    g1.add((node_title, SH.closed, Literal(True, datatype=XSD.boolean)))
 
     ignored_props_list = [RDF.type, URIRef("http://www.w3.org/1999/02/22-rdf-syntax-ns#id"), RDF.value, RDFS.label]
     ignored_list_node = BNode()

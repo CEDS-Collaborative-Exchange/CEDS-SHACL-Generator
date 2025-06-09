@@ -57,7 +57,7 @@ def ontology_manager():
         unsafe_allow_html=True,
     )
 
-    st.title("Ontology Manager")
+    st.title("CEDS SHACL Generator")
     
 
     # Create a three-column layout
@@ -132,9 +132,8 @@ def app():
         st.session_state.SHACL_content = ""
 
     st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Ontology Manager"])
-
-    if page == "Ontology Manager":
+    page = st.sidebar.radio("Go to", ["CEDS SHACL Generator"])
+    if page == "CEDS SHACL Generator":
         ontology_manager()
 
 if __name__ == "__main__":
