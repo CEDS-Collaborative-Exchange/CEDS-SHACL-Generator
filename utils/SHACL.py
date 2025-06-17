@@ -116,51 +116,57 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
         prop_shape = URIRef(f"{prop_namespace}{prop_notation}Shape")
 
+        # Determine if there are any custom constraints
+        constraints_key = f"{class_uri}::{prop_uri}"
+        constraints = st.session_state.property_constraints.get(constraints_key, {})
+
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = g.subjects(RDF.type, RDFS.Class)
         for range_uri in ranges:
-            # Add the proprety shape to the class node shape
+            # Always add the property shape to the class node shape
             g1.add((class_node_title, SH.property, prop_shape))
 
-            # Check if the range is a class and not a datatype.  No need to redefine the datatype in SHACL as they are defined in the common PropertyShapes.ttl file
-            if "#C" in str(range_uri):
+            is_ceds_class = "#C" in str(range_uri)
+            option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
 
-                # Check if the property is a option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
-                option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
-                if len(option_set) > 0:
-                    if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                        # If there is a CEPI option set value in the "cepi" namespace, override the property shape's "sh:in" constraint
-                        option_set_node = BNode()
-                        Collection(g1, option_set_node, option_set)
+            if is_ceds_class:
+                if option_set and any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
+                    # Override property shape with sh:in
+                    option_set_node = BNode()
+                    Collection(g1, option_set_node, option_set)
+                    g1.add((prop_shape, SH["in"], option_set_node))
 
-                        g1.add((prop_shape, SH["in"], option_set_node))
-
-
-                # If the range is an RDFS Class, meaning it's a CEDS Class and NOT an option set, create a property shape for it
                 elif range_uri in classes:
-                        g1.add((prop_shape, RDF.type, SH.PropertyShape))
-                        g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
-                        range_notation = next(g.objects(range_uri, SKOS.notation), None)
+                    range_notation = next(g.objects(range_uri, SKOS.notation), None)
+                    if not range_notation:
+                        logger.warning(f"No skos:notation found for range URI: {range_uri}")
+                        continue
 
-                        if not range_notation:
-                            logger.warning(f"No skos:notation found for range URI: {range_uri}")
-                            continue
+                    for prefix, uri in g.namespaces():
+                        if str(range_uri).startswith(str(uri)):
+                            range_namespace = uri
+                            break
+                    else:
+                        range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
 
-                        for prefix, uri in g.namespaces():
-                            if str(range_uri).startswith(str(uri)):
-                                range_namespace = uri
-                                break
-                        else:
-                            range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
+                    range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
 
-                        range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
+                    g1.add((prop_shape, SH["class"], URIRef(range_uri)))
+                    g1.add((prop_shape, SH["node"], range_shape))
 
-                        g1.add((prop_shape, SH["class"], URIRef(range_uri)))
-                        g1.add((prop_shape, SH["node"], range_shape))
+                    if str(range_uri) not in class_property_map:
+                        g1.add((prop_shape, SH.nodeKind, SH.IRI))
 
-                        if str(range_uri) not in class_property_map:
-                            g1.add((prop_shape, SH.nodeKind, SH.IRI))
+        # Add custom constraints only if they exist and are explicitly enabled
+        if "minCount" in constraints:
+            g1.add((prop_shape, SH.minCount, Literal(constraints["minCount"]["value"])))
+        if "maxCount" in constraints:
+            g1.add((prop_shape, SH.maxCount, Literal(constraints["maxCount"]["value"])))
+        if "maxLength" in constraints:
+            g1.add((prop_shape, SH.maxLength, Literal(constraints["maxLength"]["value"])))
 
             
 
@@ -367,6 +373,9 @@ def display_constraints():
         st.info("No properties selected. Please select properties in the 'Class and Property Menu' page.")
         return
 
+    if "property_constraints" not in st.session_state or st.session_state.property_constraints is None:
+        st.session_state.property_constraints = {}
+
     combined_graph = st.session_state.combined_graph
     property_graph = st.session_state.property_graph
     class_property_map = st.session_state.class_property_map
@@ -375,7 +384,6 @@ def display_constraints():
         class_label = get_label(class_uri, combined_graph)
         with st.expander(f"Class: {class_label}"):
             for prop_uri in properties:
-                # Find PropertyShape(s) that have sh:path = this property
                 shapes = list(property_graph.subjects(predicate=SH.path, object=prop_uri))
 
                 # Skip property if any associated shape has sh:nodeKind sh:IRI
@@ -395,10 +403,103 @@ def display_constraints():
 
                 for shape in shapes:
                     st.markdown(f"**Shape URI:** `{shape}`")
+
+                    # Preload default values from the graph
+                    def to_int_safe(val):
+                        try:
+                            return int(str(val)) if val is not None else 0
+                        except:
+                            return 0
+
+                    default_min = to_int_safe(property_graph.value(shape, SH.minCount))
+                    default_max = to_int_safe(property_graph.value(shape, SH.maxCount))
+                    default_len = to_int_safe(property_graph.value(shape, SH.maxLength))
+
+                    # Exclude editable predicates from display
+                    editable_predicates = {SH.minCount, SH.maxCount, SH.maxLength}
                     for p, o in property_graph.predicate_objects(subject=shape):
+                        if p in editable_predicates:
+                            continue
                         p_label = get_label(p, property_graph)
                         o_label = get_label(o, property_graph)
                         st.write(f"- **{p_label}**: {o_label}")
+
+                    # Editable UI for xsd:string properties only
+                    is_string = property_graph.value(shape, SH.datatype) == XSD.string
+                    if is_string:
+                        constraints_key = f"{class_uri}::{prop_uri}"
+                        existing = st.session_state.property_constraints.get(constraints_key, {})
+
+                        st.markdown("**Edit String Constraints**")
+
+                        enable_min = st.checkbox(
+                            "Enable minCount",
+                            value=existing.get("minCount", {}).get("enabled", False),
+                            key=f"{constraints_key}_min_enable"
+                        )
+                        min_val = st.number_input(
+                            "minCount", min_value=0,
+                            value=existing.get("minCount", {}).get("value", default_min),
+                            disabled=not enable_min,
+                            key=f"{constraints_key}_min"
+                        )
+
+                        enable_max = st.checkbox(
+                            "Enable maxCount",
+                            value=existing.get("maxCount", {}).get("enabled", False),
+                            key=f"{constraints_key}_max_enable"
+                        )
+                        max_val = st.number_input(
+                            "maxCount", min_value=0,
+                            value=existing.get("maxCount", {}).get("value", default_max),
+                            disabled=not enable_max,
+                            key=f"{constraints_key}_max"
+                        )
+
+                        enable_len = st.checkbox(
+                            "Enable maxLength",
+                            value=existing.get("maxLength", {}).get("enabled", False),
+                            key=f"{constraints_key}_len_enable"
+                        )
+                        max_length = st.number_input(
+                            "maxLength", min_value=0,
+                            value=existing.get("maxLength", {}).get("value", default_len),
+                            disabled=not enable_len,
+                            key=f"{constraints_key}_len"
+                        )
+
+                        # Save only enabled constraints
+                        updated_constraints = {}
+                        if enable_min:
+                            updated_constraints["minCount"] = {
+                                "value": min_val,
+                                "enabled": True,
+                                "shape": str(shape),
+                                "class": str(class_uri),
+                                "property": str(prop_uri)
+                            }
+                        if enable_max:
+                            updated_constraints["maxCount"] = {
+                                "value": max_val,
+                                "enabled": True,
+                                "shape": str(shape),
+                                "class": str(class_uri),
+                                "property": str(prop_uri)
+                            }
+                        if enable_len:
+                            updated_constraints["maxLength"] = {
+                                "value": max_length,
+                                "enabled": True,
+                                "shape": str(shape),
+                                "class": str(class_uri),
+                                "property": str(prop_uri)
+                            }
+
+                        if updated_constraints:
+                            st.session_state.property_constraints[constraints_key] = updated_constraints
+                        elif constraints_key in st.session_state.property_constraints:
+                            del st.session_state.property_constraints[constraints_key]
+
 
 
 
