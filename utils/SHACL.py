@@ -8,6 +8,7 @@ from io import BytesIO
 from utils.common import add_namespace, get_rdf_format, get_label, get_properties_for_class
 import streamlit as st
 import json
+from streamlit_ace import st_ace
 
 logger = logging.getLogger(__name__)
 
@@ -158,26 +159,120 @@ def initialize_graphs(ceds_path, extension_path):
 
     return g, g1
 
-def load_ontologies(uploaded_files, namespace_data):
-    """Load all uploaded ontology files into the combined RDF graph."""
+def ontology_manager():
+    st.subheader("Manage Ontology Files")
+
+    uploaded_ontology_files = st.file_uploader(
+        "Upload Ontology Files",
+        type=["ttl", "rdf", "xml"],
+        accept_multiple_files=True
+    )
+
+    existing_file_ids = {f[0].file_id for f in st.session_state.file_list}
+
+    # Append new files with defaults
+    if uploaded_ontology_files:
+        for file in uploaded_ontology_files:
+            if file.file_id not in existing_file_ids:
+                st.session_state.file_list.append(
+                    (file, "http://ceds.ed.gov/terms#", "ceds")
+                )
+
+    # Rebuild list with updated text box values
+    updated_list = []
+    for file, namespace_url, namespace_shortname in st.session_state.file_list:
+        url_key = f"url_{file.file_id}"
+        short_key = f"short_{file.file_id}"
+
+        # Use saved values directly as the default
+        namespace_url = st.text_input(
+            f"Namespace URL for {file.name}",
+            value=namespace_url,
+            key=url_key
+        )
+        namespace_shortname = st.text_input(
+            f"Namespace Shortname for {file.name}",
+            value=namespace_shortname,
+            key=short_key
+        )
+
+        updated_list.append((file, namespace_url, namespace_shortname))
+
+    st.session_state.file_list = updated_list
+
+    logging.warning(st.session_state.file_list)
+
+    # Button to load ontologies using the stored file list
+    if st.button("Load Ontologies"):
+        st.session_state.combined_graph = load_ontologies(st.session_state.file_list)
+
+    st.subheader("Upload Property File")
+
+    # Show a status message if a graph is already loaded
+    if st.session_state.get("property_graph") and len(st.session_state.property_graph) > 0:
+        st.info("A SHACL property file is already loaded. Uploading a new file will replace it.")
+
+    # Always show the uploader
+    uploaded = st.file_uploader(
+        "Upload Property File",
+        type=["ttl", "rdf", "xml"],
+        accept_multiple_files=False
+    )
+
+    if uploaded is not None:
+        try:
+            file_content = uploaded.getvalue()
+
+            # Optional: detect format based on extension
+            def get_rdf_format(filename):
+                ext = filename.split(".")[-1].lower()
+                return {
+                    "ttl": "turtle",
+                    "rdf": "xml",
+                    "xml": "xml",
+                    "n3": "n3",
+                    "nt": "nt"
+                }.get(ext, "turtle")
+
+            fmt = get_rdf_format(uploaded.name)
+
+            g = Graph()
+            g.parse(data=file_content, format=fmt)
+            st.session_state.property_graph = g
+
+            st.success(f"SHACL file '{uploaded.name}' loaded and parsed successfully.")
+        except Exception as e:
+            st.error(f"Failed to parse SHACL file: {e}")
+
+
+def load_ontologies(file_list):
+    """Load all files from session_state into a combined RDF graph."""
     combined_graph = Graph()
-    for file, (namespace_url, namespace_shortname) in zip(uploaded_files, namespace_data):
+
+    for file, namespace_url, namespace_shortname in file_list:
         try:
             rdf_format = get_rdf_format(file.name)
             if not rdf_format:
                 raise ValueError(f"Unsupported file format for {file.name}.")
+
             temp_graph = Graph()
-            temp_graph.parse(data=file.read(), format=rdf_format)
-            # Dynamically bind namespaces provided by the user
+            file_content = file.getvalue()  # Use getvalue() instead of read() to avoid empty reads
+            temp_graph.parse(data=file_content, format=rdf_format)
+
+            # Bind the namespace
             add_namespace(namespaces, namespace_shortname, namespace_url)
-            combined_graph.namespace_manager.bind(namespace_shortname, Namespace(namespace_url))  # Bind namespace
-            combined_graph += temp_graph  # Merge the file's graph into the combined graph
+            combined_graph.namespace_manager.bind(namespace_shortname, Namespace(namespace_url))
+            combined_graph += temp_graph
+
             st.success(f"Ontology file '{file.name}' loaded successfully with namespace '{namespace_shortname}'.")
+
         except Exception as e:
             st.error(f"Failed to load ontology file '{file.name}': {e}")
+
     return combined_graph
 
 def display_classes_and_properties():
+    st.subheader("Classes and Properties")
     """Display classes and their properties in a tree-like structure."""
     if "combined_graph" not in st.session_state or len(st.session_state.combined_graph) == 0:
         st.info("No ontology files loaded. Please upload files.")
@@ -223,6 +318,80 @@ def display_classes_and_properties():
             # Remove the class from the map if no properties are selected
             if not st.session_state.class_property_map[class_uri]:
                 del st.session_state.class_property_map[class_uri]
+
+
+def display_constraints():
+    st.subheader("Constraints")
+
+    if "property_graph" not in st.session_state or st.session_state.property_graph is None:
+        st.warning("No SHACL property graph loaded.")
+        return
+
+    if "class_property_map" not in st.session_state or not st.session_state.class_property_map:
+        st.info("No properties selected. Please select properties in the 'Class and Property Menu' page.")
+        return
+
+    combined_graph = st.session_state.combined_graph
+    property_graph = st.session_state.property_graph
+    class_property_map = st.session_state.class_property_map
+
+    for class_uri, properties in class_property_map.items():
+        class_label = get_label(class_uri, combined_graph)
+        with st.expander(f"Class: {class_label}"):
+            for prop_uri in properties:
+                # Find PropertyShape(s) that have sh:path = this property
+                shapes = list(property_graph.subjects(predicate=SH.path, object=prop_uri))
+
+                # Skip property if any associated shape has sh:nodeKind sh:IRI
+                skip_due_to_nodekind = any(
+                    property_graph.value(shape, SH.nodeKind) == SH.IRI
+                    for shape in shapes
+                )
+                if skip_due_to_nodekind:
+                    continue
+
+                prop_label = get_label(prop_uri, combined_graph)
+                st.markdown(f"#### Property: {prop_label} (`{prop_uri}`)")
+
+                if not shapes:
+                    st.warning("No SHACL PropertyShape found for this property.")
+                    continue
+
+                for shape in shapes:
+                    st.markdown(f"**Shape URI:** `{shape}`")
+                    for p, o in property_graph.predicate_objects(subject=shape):
+                        p_label = get_label(p, property_graph)
+                        o_label = get_label(o, property_graph)
+                        st.write(f"- **{p_label}**: {o_label}")
+
+
+
+def get_label(uri, graph):
+    label = graph.value(uri, RDFS.label)
+    if label:
+        return str(label)
+    elif isinstance(uri, str):
+        return uri.split("/")[-1].split("#")[-1]
+    else:
+        return uri.n3(graph.namespace_manager)
+
+
+def show_SHACL():
+    st.header("SHACL")
+    if "class_property_map" in st.session_state and st.session_state.class_property_map:
+        shacl_content = generate_shacl()
+        if shacl_content:
+            # Display the SHACL content in the Ace editor
+            st_ace(
+                value=shacl_content,
+                language="turtle",
+                theme="monokai",
+                readonly=True,
+                height=400,
+                key="st-ace-editor",  # Assign a consistent key to target the editor
+            )
+    else:
+        st.info("No SHACL content to display. Please select class-property mappings.")
 
 def update_class_property_map(class_uri, prop, key):
     """Update the class-property mappings in session state."""
