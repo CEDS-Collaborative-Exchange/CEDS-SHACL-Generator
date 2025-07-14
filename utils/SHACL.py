@@ -116,27 +116,103 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
         prop_shape = URIRef(f"{prop_namespace}{prop_notation}Shape")
 
-        # Determine if there are any custom constraints
+        # Determine if there are any truly custom constraints (not just defaults from property graph)
         constraints_key = f"{class_uri}::{prop_uri}"
         constraints = st.session_state.property_constraints.get(constraints_key, {})
+        
+        # Check if constraints are truly custom by comparing with property graph defaults
+        has_truly_custom_constraints = False
+        if constraints and st.session_state.property_graph:
+            # Find the shape in the property graph for this property
+            property_shapes = list(st.session_state.property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
+            
+            for prop_graph_shape in property_shapes:
+                for constraint_name, constraint_data in constraints.items():
+                    if constraint_data.get("enabled", False):
+                        shacl_predicate = getattr(SH, constraint_name, None)
+                        if shacl_predicate:
+                            # Get the default value from the property graph
+                            default_value = st.session_state.property_graph.value(prop_graph_shape, shacl_predicate)
+                            user_value = constraint_data["value"]
+                            
+                            # Convert both to comparable types
+                            if default_value is not None:
+                                default_python_value = convert_rdf_literal_to_python(default_value)
+                                
+                                # Compare values - if they're different, it's a custom constraint
+                                if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
+                                    if int(user_value) != int(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                                elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
+                                    if float(user_value) != float(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                                elif constraint_name == "pattern":
+                                    if str(user_value) != str(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                                elif constraint_name == "uniqueLang":
+                                    if bool(user_value) != bool(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                                elif constraint_name == "nodeKind":
+                                    # Compare node kind values
+                                    node_kind_map = {
+                                        "IRI": SH.IRI,
+                                        "BlankNode": SH.BlankNode,
+                                        "Literal": SH.Literal,
+                                        "BlankNodeOrIRI": SH.BlankNodeOrIRI,
+                                        "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
+                                        "IRIOrLiteral": SH.IRIOrLiteral
+                                    }
+                                    user_node_kind = node_kind_map.get(str(user_value), SH.IRI)
+                                    if user_node_kind != default_value:
+                                        has_truly_custom_constraints = True
+                                        break
+                                elif constraint_name == "languageIn":
+                                    # Compare language lists
+                                    user_languages = [lang.strip() for lang in str(user_value).split(",") if lang.strip()]
+                                    # Note: This is a simplified comparison - proper implementation would need to handle RDF lists
+                                    if str(user_value) != str(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                                else:
+                                    if str(user_value) != str(default_python_value):
+                                        has_truly_custom_constraints = True
+                                        break
+                            else:
+                                # No default value exists, so any user value is custom
+                                has_truly_custom_constraints = True
+                                break
+                
+                if has_truly_custom_constraints:
+                    break
 
+        # Check if this property should be included based on criteria:
+        # 1. Has truly custom constraints (different from property graph defaults), OR
+        # 2. Is an IRI node kind (points to another class)
+        should_include_property = False
+        
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = g.subjects(RDF.type, RDFS.Class)
+        
         for range_uri in ranges:
-            # Always add the property shape to the class node shape
-            g1.add((class_node_title, SH.property, prop_shape))
-
             is_ceds_class = "#C" in str(range_uri)
             option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
 
             if is_ceds_class:
                 if option_set and any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                    # Override property shape with sh:in
-                    option_set_node = BNode()
-                    Collection(g1, option_set_node, option_set)
-                    g1.add((prop_shape, SH["in"], option_set_node))
-
+                    # This is an option set - include if has truly custom constraints
+                    if has_truly_custom_constraints:
+                        should_include_property = True
+                        # Override property shape with sh:in
+                        option_set_node = BNode()
+                        Collection(g1, option_set_node, option_set)
+                        g1.add((prop_shape, SH["in"], option_set_node))
                 elif range_uri in classes:
+                    # This points to another class - always include (IRI node kind)
+                    should_include_property = True
                     g1.add((prop_shape, RDF.type, SH.PropertyShape))
                     g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
@@ -159,16 +235,69 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
                     if str(range_uri) not in class_property_map:
                         g1.add((prop_shape, SH.nodeKind, SH.IRI))
+            else:
+                # Not a CEDS class - include only if has truly custom constraints
+                if has_truly_custom_constraints:
+                    should_include_property = True
+                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
-        # Add custom constraints only if they exist and are explicitly enabled
-        if "minCount" in constraints:
-            g1.add((prop_shape, SH.minCount, Literal(constraints["minCount"]["value"])))
-        if "maxCount" in constraints:
-            g1.add((prop_shape, SH.maxCount, Literal(constraints["maxCount"]["value"])))
-        if "maxLength" in constraints:
-            g1.add((prop_shape, SH.maxLength, Literal(constraints["maxLength"]["value"])))
-
+        # Only add the property to the class node shape if it meets inclusion criteria
+        if should_include_property:
+            g1.add((class_node_title, SH.property, prop_shape))
             
+            # Add basic property shape properties if not already added
+            if not list(g1.predicate_objects(subject=prop_shape)):
+                g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+
+            # Add only truly custom constraints (those that differ from defaults)
+            if has_truly_custom_constraints:
+                for constraint_name, constraint_data in constraints.items():
+                    if constraint_data.get("enabled", False):
+                        shacl_predicate = getattr(SH, constraint_name, None)
+                        if shacl_predicate:
+                            value = constraint_data["value"]
+                            
+                            # Handle different data types appropriately
+                            if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
+                                literal_value = Literal(int(value))
+                            elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
+                                # Determine appropriate datatype based on the property's datatype
+                                datatype = constraint_data.get("datatype")
+                                if datatype and str(datatype) in [str(XSD.integer), str(XSD.int), str(XSD.long)]:
+                                    literal_value = Literal(int(value))
+                                else:
+                                    literal_value = Literal(float(value))
+                            elif constraint_name == "pattern":
+                                literal_value = Literal(str(value))
+                            elif constraint_name == "uniqueLang":
+                                literal_value = Literal(bool(value), datatype=XSD.boolean)
+                            elif constraint_name == "nodeKind":
+                                # Handle nodeKind as a resource, not a literal
+                                node_kind_map = {
+                                    "IRI": SH.IRI,
+                                    "BlankNode": SH.BlankNode,
+                                    "Literal": SH.Literal,
+                                    "BlankNodeOrIRI": SH.BlankNodeOrIRI,
+                                    "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
+                                    "IRIOrLiteral": SH.IRIOrLiteral
+                                }
+                                literal_value = node_kind_map.get(str(value), SH.IRI)
+                                g1.add((prop_shape, shacl_predicate, literal_value))
+                                continue
+                            elif constraint_name == "languageIn":
+                                # Handle languageIn as a list
+                                languages = [lang.strip() for lang in str(value).split(",") if lang.strip()]
+                                if languages:
+                                    lang_list_node = BNode()
+                                    Collection(g1, lang_list_node, [Literal(lang) for lang in languages])
+                                    g1.add((prop_shape, shacl_predicate, lang_list_node))
+                                continue
+                            else:
+                                literal_value = Literal(str(value))
+                            
+                            g1.add((prop_shape, shacl_predicate, literal_value))
 
 def initialize_graphs(ceds_path, extension_path):
     """Initialize RDF graphs for CEDS Ontology and Extension Ontology."""
@@ -361,6 +490,160 @@ def display_classes_and_properties():
             if not st.session_state.class_property_map[class_uri]:
                 del st.session_state.class_property_map[class_uri]
 
+def get_available_constraints_for_datatype(datatype):
+    """Return available SHACL constraints based on the property's datatype."""
+    base_constraints = {
+        "minCount": {"type": "number", "min": 0, "description": "Minimum number of values"},
+        "maxCount": {"type": "number", "min": 0, "description": "Maximum number of values"},
+        "nodeKind": {"type": "select", "options": ["IRI", "BlankNode", "Literal", "BlankNodeOrIRI", "BlankNodeOrLiteral", "IRIOrLiteral"], "description": "Kind of node"}
+    }
+    
+    if datatype == XSD.string:
+        base_constraints.update({
+            "minLength": {"type": "number", "min": 0, "description": "Minimum string length"},
+            "maxLength": {"type": "number", "min": 0, "description": "Maximum string length"},
+            "pattern": {"type": "text", "description": "Regular expression pattern"},
+            "languageIn": {"type": "text", "description": "Allowed language tags (comma-separated)"},
+            "uniqueLang": {"type": "boolean", "description": "Values must have unique language tags"}
+        })
+    elif datatype in [XSD.integer, XSD.int, XSD.long, XSD.short, XSD.byte]:
+        base_constraints.update({
+            "minInclusive": {"type": "number", "description": "Minimum value (inclusive)"},
+            "maxInclusive": {"type": "number", "description": "Maximum value (inclusive)"},
+            "minExclusive": {"type": "number", "description": "Minimum value (exclusive)"},
+            "maxExclusive": {"type": "number", "description": "Maximum value (exclusive)"}
+        })
+    elif datatype in [XSD.decimal, XSD.float, XSD.double]:
+        base_constraints.update({
+            "minInclusive": {"type": "number", "step": 0.01, "description": "Minimum value (inclusive)"},
+            "maxInclusive": {"type": "number", "step": 0.01, "description": "Maximum value (inclusive)"},
+            "minExclusive": {"type": "number", "step": 0.01, "description": "Minimum value (exclusive)"},
+            "maxExclusive": {"type": "number", "step": 0.01, "description": "Maximum value (exclusive)"}
+        })
+    elif datatype == XSD.dateTime:
+        base_constraints.update({
+            "minInclusive": {"type": "datetime-local", "description": "Minimum date/time (inclusive)"},
+            "maxInclusive": {"type": "datetime-local", "description": "Maximum date/time (inclusive)"},
+            "minExclusive": {"type": "datetime-local", "description": "Minimum date/time (exclusive)"},
+            "maxExclusive": {"type": "datetime-local", "description": "Maximum date/time (exclusive)"}
+        })
+    elif datatype == XSD.date:
+        base_constraints.update({
+            "minInclusive": {"type": "date", "description": "Minimum date (inclusive)"},
+            "maxInclusive": {"type": "date", "description": "Maximum date (inclusive)"},
+            "minExclusive": {"type": "date", "description": "Minimum date (exclusive)"},
+            "maxExclusive": {"type": "date", "description": "Maximum date (exclusive)"}
+        })
+    
+    return base_constraints
+
+def convert_rdf_literal_to_python(value):
+    """Convert RDF Literal objects to appropriate Python types."""
+    if value is None:
+        return None
+    
+    if hasattr(value, 'toPython'):
+        # RDFLib Literal object
+        try:
+            return value.toPython()
+        except:
+            return str(value)
+    else:
+        # Already a Python type
+        return value
+
+def render_constraint_input(constraint_name, constraint_config, current_value, enabled, key_prefix):
+    """Render the appropriate input widget for a constraint based on its configuration."""
+    enable_key = f"{key_prefix}_{constraint_name}_enable"
+    value_key = f"{key_prefix}_{constraint_name}_value"
+    
+    # Convert RDF literal to Python type
+    current_value = convert_rdf_literal_to_python(current_value)
+    
+    # Special handling for boolean constraints - they combine enable/value into one checkbox
+    if constraint_config["type"] == "boolean":
+        # Handle boolean conversion
+        if current_value is not None:
+            if isinstance(current_value, str):
+                current_value = current_value.lower() in ('true', '1', 'yes', 'on')
+            else:
+                current_value = bool(current_value)
+        else:
+            current_value = enabled  # Use enabled state as default for boolean constraints
+            
+        value = st.checkbox(
+            f"Enable {constraint_name}",  # Keep consistent naming with other constraints
+            value=current_value,
+            key=value_key,
+            help=constraint_config.get("description", "")
+        )
+        
+        # For boolean constraints, if the checkbox is checked, the constraint is enabled and set to true
+        return value, value
+    
+    # For non-boolean constraints, show enable checkbox first
+    is_enabled = st.checkbox(
+        f"Enable {constraint_name}",
+        value=enabled,
+        key=enable_key,
+        help=constraint_config.get("description", "")
+    )
+    
+    if not is_enabled:
+        return None, False
+    
+    # Render appropriate input based on constraint type
+    if constraint_config["type"] == "number":
+        # Ensure current_value is a valid number
+        if current_value is not None:
+            try:
+                current_value = float(current_value) if isinstance(current_value, str) else current_value
+                if constraint_config.get("step", 1) == 1:  # Integer input
+                    current_value = int(current_value)
+            except (ValueError, TypeError):
+                current_value = constraint_config.get("min", 0)
+        else:
+            current_value = constraint_config.get("min", 0)
+            
+        value = st.number_input(
+            constraint_name,
+            min_value=constraint_config.get("min", None),
+            step=constraint_config.get("step", 1),
+            value=current_value,
+            key=value_key
+        )
+    elif constraint_config["type"] == "text":
+        value = st.text_input(
+            constraint_name,
+            value=str(current_value) if current_value is not None else "",
+            key=value_key
+        )
+    elif constraint_config["type"] == "select":
+        options = constraint_config["options"]
+        index = 0
+        if current_value and str(current_value) in options:
+            index = options.index(str(current_value))
+        value = st.selectbox(
+            constraint_name,
+            options=options,
+            index=index,
+            key=value_key
+        )
+    elif constraint_config["type"] in ["date", "datetime-local"]:
+        value = st.text_input(
+            f"{constraint_name} (ISO format)",
+            value=str(current_value) if current_value is not None else "",
+            key=value_key,
+            help=f"Enter in ISO format (e.g., {'2023-12-31T23:59:59' if constraint_config['type'] == 'datetime-local' else '2023-12-31'})"
+        )
+    else:
+        value = st.text_input(
+            constraint_name,
+            value=str(current_value) if current_value is not None else "",
+            key=value_key
+        )
+    
+    return value, True
 
 def display_constraints():
     st.subheader("Constraints")
@@ -385,15 +668,7 @@ def display_constraints():
         with st.expander(f"Class: {class_label}"):
             for prop_uri in properties:
                 shapes = list(property_graph.subjects(predicate=SH.path, object=prop_uri))
-
-                # Skip property if any associated shape has sh:nodeKind sh:IRI
-                skip_due_to_nodekind = any(
-                    property_graph.value(shape, SH.nodeKind) == SH.IRI
-                    for shape in shapes
-                )
-                if skip_due_to_nodekind:
-                    continue
-
+                
                 prop_label = get_label(prop_uri, combined_graph)
                 st.markdown(f"#### Property: {prop_label} (`{prop_uri}`)")
 
@@ -403,105 +678,98 @@ def display_constraints():
 
                 for shape in shapes:
                     st.markdown(f"**Shape URI:** `{shape}`")
-
-                    # Preload default values from the graph
-                    def to_int_safe(val):
-                        try:
-                            return int(str(val)) if val is not None else 0
-                        except:
-                            return 0
-
-                    default_min = to_int_safe(property_graph.value(shape, SH.minCount))
-                    default_max = to_int_safe(property_graph.value(shape, SH.maxCount))
-                    default_len = to_int_safe(property_graph.value(shape, SH.maxLength))
-
-                    # Exclude editable predicates from display
-                    editable_predicates = {SH.minCount, SH.maxCount, SH.maxLength}
+                    
+                    # Get the datatype of the property
+                    datatype = property_graph.value(shape, SH.datatype)
+                    node_kind = property_graph.value(shape, SH.nodeKind)
+                    
+                    # Display non-editable properties
+                    editable_predicates = {
+                        SH.minCount, SH.maxCount, SH.minLength, SH.maxLength, SH.pattern,
+                        SH.minInclusive, SH.maxInclusive, SH.minExclusive, SH.maxExclusive,
+                        SH.nodeKind, SH.languageIn, SH.uniqueLang
+                    }
+                    
+                    st.markdown("**Current Shape Properties:**")
                     for p, o in property_graph.predicate_objects(subject=shape):
                         if p in editable_predicates:
                             continue
                         p_label = get_label(p, property_graph)
                         o_label = get_label(o, property_graph)
                         st.write(f"- **{p_label}**: {o_label}")
-
-                    # Editable UI for xsd:string properties only
-                    is_string = property_graph.value(shape, SH.datatype) == XSD.string
-                    if is_string:
-                        constraints_key = f"{class_uri}::{prop_uri}"
-                        existing = st.session_state.property_constraints.get(constraints_key, {})
-
-                        st.markdown("**Edit String Constraints**")
-
-                        enable_min = st.checkbox(
-                            "Enable minCount",
-                            value=existing.get("minCount", {}).get("enabled", False),
-                            key=f"{constraints_key}_min_enable"
-                        )
-                        min_val = st.number_input(
-                            "minCount", min_value=0,
-                            value=existing.get("minCount", {}).get("value", default_min),
-                            disabled=not enable_min,
-                            key=f"{constraints_key}_min"
-                        )
-
-                        enable_max = st.checkbox(
-                            "Enable maxCount",
-                            value=existing.get("maxCount", {}).get("enabled", False),
-                            key=f"{constraints_key}_max_enable"
-                        )
-                        max_val = st.number_input(
-                            "maxCount", min_value=0,
-                            value=existing.get("maxCount", {}).get("value", default_max),
-                            disabled=not enable_max,
-                            key=f"{constraints_key}_max"
-                        )
-
-                        enable_len = st.checkbox(
-                            "Enable maxLength",
-                            value=existing.get("maxLength", {}).get("enabled", False),
-                            key=f"{constraints_key}_len_enable"
-                        )
-                        max_length = st.number_input(
-                            "maxLength", min_value=0,
-                            value=existing.get("maxLength", {}).get("value", default_len),
-                            disabled=not enable_len,
-                            key=f"{constraints_key}_len"
-                        )
-
-                        # Save only enabled constraints
-                        updated_constraints = {}
-                        if enable_min:
-                            updated_constraints["minCount"] = {
-                                "value": min_val,
-                                "enabled": True,
-                                "shape": str(shape),
-                                "class": str(class_uri),
-                                "property": str(prop_uri)
-                            }
-                        if enable_max:
-                            updated_constraints["maxCount"] = {
-                                "value": max_val,
-                                "enabled": True,
-                                "shape": str(shape),
-                                "class": str(class_uri),
-                                "property": str(prop_uri)
-                            }
-                        if enable_len:
-                            updated_constraints["maxLength"] = {
-                                "value": max_length,
-                                "enabled": True,
-                                "shape": str(shape),
-                                "class": str(class_uri),
-                                "property": str(prop_uri)
-                            }
-
-                        if updated_constraints:
-                            st.session_state.property_constraints[constraints_key] = updated_constraints
-                        elif constraints_key in st.session_state.property_constraints:
-                            del st.session_state.property_constraints[constraints_key]
-
-
-
+                    
+                    if datatype:
+                        st.info(f"Detected datatype: {get_label(datatype, property_graph)}")
+                    if node_kind:
+                        st.info(f"Node kind: {get_label(node_kind, property_graph)}")
+                    
+                    # Get available constraints for this datatype
+                    available_constraints = get_available_constraints_for_datatype(datatype)
+                    
+                    # Load existing constraint values
+                    constraints_key = f"{class_uri}::{prop_uri}"
+                    existing_constraints = st.session_state.property_constraints.get(constraints_key, {})
+                    
+                    # Load current values from the SHACL graph and convert them properly
+                    current_values = {}
+                    for constraint_name in available_constraints.keys():
+                        shacl_predicate = getattr(SH, constraint_name, None)
+                        if shacl_predicate:
+                            value = property_graph.value(shape, shacl_predicate)
+                            if value is not None:
+                                current_values[constraint_name] = convert_rdf_literal_to_python(value)
+                    
+                    st.markdown("**Edit Constraints:**")
+                    
+                    # Create two columns for better layout
+                    col1, col2 = st.columns(2)
+                    
+                    updated_constraints = {}
+                    constraint_items = list(available_constraints.items())
+                    mid_point = len(constraint_items) // 2
+                    
+                    # Split constraints between two columns
+                    for i, (constraint_name, constraint_config) in enumerate(constraint_items):
+                        col = col1 if i < mid_point else col2
+                        
+                        with col:
+                            # Get existing values
+                            existing_enabled = existing_constraints.get(constraint_name, {}).get("enabled", False)
+                            existing_value = existing_constraints.get(constraint_name, {}).get("value")
+                            
+                            # Use current SHACL value if no custom constraint exists
+                            if not existing_enabled and constraint_name in current_values:
+                                display_value = current_values[constraint_name]
+                                existing_enabled = True
+                            else:
+                                display_value = existing_value
+                            
+                            key_prefix = f"{constraints_key}_{constraint_name}"
+                            value, is_enabled = render_constraint_input(
+                                constraint_name, 
+                                constraint_config, 
+                                display_value, 
+                                existing_enabled, 
+                                key_prefix
+                            )
+                            
+                            if is_enabled and value is not None:
+                                updated_constraints[constraint_name] = {
+                                    "value": value,
+                                    "enabled": True,
+                                    "shape": str(shape),
+                                    "class": str(class_uri),
+                                    "property": str(prop_uri),
+                                    "datatype": str(datatype) if datatype else None
+                                }
+                    
+                    # Update session state
+                    if updated_constraints:
+                        st.session_state.property_constraints[constraints_key] = updated_constraints
+                    elif constraints_key in st.session_state.property_constraints:
+                        del st.session_state.property_constraints[constraints_key]
+                    
+                    st.markdown("---")
 
 def get_label(uri, graph):
     label = graph.value(uri, RDFS.label)
@@ -574,16 +842,19 @@ def generate_sample_jsonld(shacl_content):
         for node_shape in g.subjects(RDF.type, SH.NodeShape):
             target_class = next(g.objects(node_shape, SH.targetClass), None)
             if target_class:
-                class_name = str(target_class).split("/")[-1]
+                class_name = str(target_class).split("/")[-1].strip()  # Clean class name
                 sample_jsonld[class_name] = {}
                 for prop_shape in g.objects(node_shape, SH.property):
                     path = next(g.objects(prop_shape, SH.path), None)
                     if path:
-                        property_name = str(path).split("/")[-1]
+                        property_name = str(path).split("/")[-1].strip()  # Clean property name
                         sample_jsonld[class_name][property_name] = "Sample Value"
 
-        return json.dumps(sample_jsonld, indent=4)
+        # Serialize the JSON-LD document without unnecessary spaces
+        return json.dumps(sample_jsonld, indent=4, separators=(',', ':'))
     except Exception as e:
         st.error(f"Failed to generate JSON-LD: {e}")
         return None
+
+
 
