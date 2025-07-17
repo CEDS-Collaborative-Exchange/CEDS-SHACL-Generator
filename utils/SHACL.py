@@ -122,6 +122,8 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         
         # Check if constraints are truly custom by comparing with property graph defaults
         has_truly_custom_constraints = False
+        custom_constraints_to_add = {}  # Store only the truly custom constraints
+        
         if constraints and st.session_state.property_graph:
             # Find the shape in the property graph for this property
             property_shapes = list(st.session_state.property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
@@ -135,6 +137,8 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                             default_value = st.session_state.property_graph.value(prop_graph_shape, shacl_predicate)
                             user_value = constraint_data["value"]
                             
+                            is_custom = False
+                            
                             # Convert both to comparable types
                             if default_value is not None:
                                 default_python_value = convert_rdf_literal_to_python(default_value)
@@ -142,20 +146,16 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                                 # Compare values - if they're different, it's a custom constraint
                                 if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
                                     if int(user_value) != int(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
                                     if float(user_value) != float(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 elif constraint_name == "pattern":
                                     if str(user_value) != str(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 elif constraint_name == "uniqueLang":
                                     if bool(user_value) != bool(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 elif constraint_name == "nodeKind":
                                     # Compare node kind values
                                     node_kind_map = {
@@ -168,23 +168,21 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                                     }
                                     user_node_kind = node_kind_map.get(str(user_value), SH.IRI)
                                     if user_node_kind != default_value:
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 elif constraint_name == "languageIn":
                                     # Compare language lists
-                                    user_languages = [lang.strip() for lang in str(user_value).split(",") if lang.strip()]
-                                    # Note: This is a simplified comparison - proper implementation would need to handle RDF lists
                                     if str(user_value) != str(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                                 else:
                                     if str(user_value) != str(default_python_value):
-                                        has_truly_custom_constraints = True
-                                        break
+                                        is_custom = True
                             else:
                                 # No default value exists, so any user value is custom
+                                is_custom = True
+                            
+                            if is_custom:
                                 has_truly_custom_constraints = True
-                                break
+                                custom_constraints_to_add[constraint_name] = constraint_data
                 
                 if has_truly_custom_constraints:
                     break
@@ -193,6 +191,7 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         # 1. Has truly custom constraints (different from property graph defaults), OR
         # 2. Is an IRI node kind (points to another class)
         should_include_property = False
+        is_iri_node_kind = False
         
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = g.subjects(RDF.type, RDFS.Class)
@@ -213,6 +212,7 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 elif range_uri in classes:
                     # This points to another class - always include (IRI node kind)
                     should_include_property = True
+                    is_iri_node_kind = True
                     g1.add((prop_shape, RDF.type, SH.PropertyShape))
                     g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
@@ -239,8 +239,6 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 # Not a CEDS class - include only if has truly custom constraints
                 if has_truly_custom_constraints:
                     should_include_property = True
-                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
-                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
         # Only add the property to the class node shape if it meets inclusion criteria
         if should_include_property:
@@ -252,52 +250,50 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
             # Add only truly custom constraints (those that differ from defaults)
-            if has_truly_custom_constraints:
-                for constraint_name, constraint_data in constraints.items():
-                    if constraint_data.get("enabled", False):
-                        shacl_predicate = getattr(SH, constraint_name, None)
-                        if shacl_predicate:
-                            value = constraint_data["value"]
-                            
-                            # Handle different data types appropriately
-                            if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
-                                literal_value = Literal(int(value))
-                            elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
-                                # Determine appropriate datatype based on the property's datatype
-                                datatype = constraint_data.get("datatype")
-                                if datatype and str(datatype) in [str(XSD.integer), str(XSD.int), str(XSD.long)]:
-                                    literal_value = Literal(int(value))
-                                else:
-                                    literal_value = Literal(float(value))
-                            elif constraint_name == "pattern":
-                                literal_value = Literal(str(value))
-                            elif constraint_name == "uniqueLang":
-                                literal_value = Literal(bool(value), datatype=XSD.boolean)
-                            elif constraint_name == "nodeKind":
-                                # Handle nodeKind as a resource, not a literal
-                                node_kind_map = {
-                                    "IRI": SH.IRI,
-                                    "BlankNode": SH.BlankNode,
-                                    "Literal": SH.Literal,
-                                    "BlankNodeOrIRI": SH.BlankNodeOrIRI,
-                                    "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
-                                    "IRIOrLiteral": SH.IRIOrLiteral
-                                }
-                                literal_value = node_kind_map.get(str(value), SH.IRI)
-                                g1.add((prop_shape, shacl_predicate, literal_value))
-                                continue
-                            elif constraint_name == "languageIn":
-                                # Handle languageIn as a list
-                                languages = [lang.strip() for lang in str(value).split(",") if lang.strip()]
-                                if languages:
-                                    lang_list_node = BNode()
-                                    Collection(g1, lang_list_node, [Literal(lang) for lang in languages])
-                                    g1.add((prop_shape, shacl_predicate, lang_list_node))
-                                continue
-                            else:
-                                literal_value = Literal(str(value))
-                            
-                            g1.add((prop_shape, shacl_predicate, literal_value))
+            for constraint_name, constraint_data in custom_constraints_to_add.items():
+                shacl_predicate = getattr(SH, constraint_name, None)
+                if shacl_predicate:
+                    value = constraint_data["value"]
+                    
+                    # Handle different data types appropriately
+                    if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
+                        literal_value = Literal(int(value))
+                    elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
+                        # Determine appropriate datatype based on the property's datatype
+                        datatype = constraint_data.get("datatype")
+                        if datatype and str(datatype) in [str(XSD.integer), str(XSD.int), str(XSD.long)]:
+                            literal_value = Literal(int(value))
+                        else:
+                            literal_value = Literal(float(value))
+                    elif constraint_name == "pattern":
+                        literal_value = Literal(str(value))
+                    elif constraint_name == "uniqueLang":
+                        literal_value = Literal(bool(value), datatype=XSD.boolean)
+                    elif constraint_name == "nodeKind":
+                        # Handle nodeKind as a resource, not a literal
+                        node_kind_map = {
+                            "IRI": SH.IRI,
+                            "BlankNode": SH.BlankNode,
+                            "Literal": SH.Literal,
+                            "BlankNodeOrIRI": SH.BlankNodeOrIRI,
+                            "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
+                            "IRIOrLiteral": SH.IRIOrLiteral
+                        }
+                        literal_value = node_kind_map.get(str(value), SH.IRI)
+                        g1.add((prop_shape, shacl_predicate, literal_value))
+                        continue
+                    elif constraint_name == "languageIn":
+                        # Handle languageIn as a list
+                        languages = [lang.strip() for lang in str(value).split(",") if lang.strip()]
+                        if languages:
+                            lang_list_node = BNode()
+                            Collection(g1, lang_list_node, [Literal(lang) for lang in languages])
+                            g1.add((prop_shape, shacl_predicate, lang_list_node))
+                        continue
+                    else:
+                        literal_value = Literal(str(value))
+                    
+                    g1.add((prop_shape, shacl_predicate, literal_value))
 
 def initialize_graphs(ceds_path, extension_path):
     """Initialize RDF graphs for CEDS Ontology and Extension Ontology."""
