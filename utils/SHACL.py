@@ -190,9 +190,13 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         # Check if this property should be included based on criteria:
         # 1. Has truly custom constraints (different from property graph defaults), OR
         # 2. Is an IRI node kind (points to another class)
+        # 3. Has a custom error message (even if constraint value matches property file)
         should_include_property = False
         is_iri_node_kind = False
-        
+        has_custom_error_message = any(
+            c.get("error_message", "") for c in constraints.values() if c.get("enabled", False)
+        )
+
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = g.subjects(RDF.type, RDFS.Class)
         
@@ -202,8 +206,8 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
             if is_ceds_class:
                 if option_set and any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                    # This is an option set - include if has truly custom constraints
-                    if has_truly_custom_constraints:
+                    # This is an option set - include if has truly custom constraints or custom error message
+                    if has_truly_custom_constraints or has_custom_error_message:
                         should_include_property = True
                         # Override property shape with sh:in
                         option_set_node = BNode()
@@ -236,30 +240,27 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                     if str(range_uri) not in class_property_map:
                         g1.add((prop_shape, SH.nodeKind, SH.IRI))
             else:
-                # Not a CEDS class - include only if has truly custom constraints
-                if has_truly_custom_constraints:
+                # Not a CEDS class - include only if has truly custom constraints or custom error message
+                if has_truly_custom_constraints or has_custom_error_message:
                     should_include_property = True
 
         # Only add the property to the class node shape if it meets inclusion criteria
         if should_include_property:
             g1.add((class_node_title, SH.property, prop_shape))
-            
             # Add basic property shape properties if not already added
             if not list(g1.predicate_objects(subject=prop_shape)):
                 g1.add((prop_shape, RDF.type, SH.PropertyShape))
                 g1.add((prop_shape, SH.path, URIRef(prop_uri)))
-
             # Add only truly custom constraints (those that differ from defaults)
             for constraint_name, constraint_data in custom_constraints_to_add.items():
                 shacl_predicate = getattr(SH, constraint_name, None)
                 if shacl_predicate:
                     value = constraint_data["value"]
-                    
+                    error_message = constraint_data.get("error_message", "")
                     # Handle different data types appropriately
                     if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
                         literal_value = Literal(int(value))
                     elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
-                        # Determine appropriate datatype based on the property's datatype
                         datatype = constraint_data.get("datatype")
                         if datatype and str(datatype) in [str(XSD.integer), str(XSD.int), str(XSD.long)]:
                             literal_value = Literal(int(value))
@@ -270,7 +271,6 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                     elif constraint_name == "uniqueLang":
                         literal_value = Literal(bool(value), datatype=XSD.boolean)
                     elif constraint_name == "nodeKind":
-                        # Handle nodeKind as a resource, not a literal
                         node_kind_map = {
                             "IRI": SH.IRI,
                             "BlankNode": SH.BlankNode,
@@ -281,19 +281,28 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                         }
                         literal_value = node_kind_map.get(str(value), SH.IRI)
                         g1.add((prop_shape, shacl_predicate, literal_value))
+                        if error_message:
+                            g1.add((prop_shape, SH.message, Literal(error_message)))
                         continue
                     elif constraint_name == "languageIn":
-                        # Handle languageIn as a list
                         languages = [lang.strip() for lang in str(value).split(",") if lang.strip()]
                         if languages:
                             lang_list_node = BNode()
                             Collection(g1, lang_list_node, [Literal(lang) for lang in languages])
                             g1.add((prop_shape, shacl_predicate, lang_list_node))
+                        if error_message:
+                            g1.add((prop_shape, SH.message, Literal(error_message)))
                         continue
                     else:
                         literal_value = Literal(str(value))
-                    
                     g1.add((prop_shape, shacl_predicate, literal_value))
+                    if error_message:
+                        g1.add((prop_shape, SH.message, Literal(error_message)))
+            # If there is a custom error message but no custom constraint, add only the message
+            if has_custom_error_message and not has_truly_custom_constraints:
+                for constraint_name, constraint_data in constraints.items():
+                    if constraint_data.get("enabled", False) and constraint_data.get("error_message", ""):
+                        g1.add((prop_shape, SH.message, Literal(constraint_data["error_message"])))
 
 def initialize_graphs(ceds_path, extension_path):
     """Initialize RDF graphs for CEDS Ontology and Extension Ontology."""
@@ -548,59 +557,57 @@ def convert_rdf_literal_to_python(value):
         # Already a Python type
         return value
 
-def render_constraint_input(constraint_name, constraint_config, current_value, enabled, key_prefix):
-    """Render the appropriate input widget for a constraint based on its configuration."""
+def render_constraint_input(constraint_name, constraint_config, current_value, enabled, key_prefix, existing_error=None):
     enable_key = f"{key_prefix}_{constraint_name}_enable"
     value_key = f"{key_prefix}_{constraint_name}_value"
-    
-    # Convert RDF literal to Python type
+    error_key = f"{key_prefix}_{constraint_name}_error"
+
     current_value = convert_rdf_literal_to_python(current_value)
-    
-    # Special handling for boolean constraints - they combine enable/value into one checkbox
+
     if constraint_config["type"] == "boolean":
-        # Handle boolean conversion
         if current_value is not None:
             if isinstance(current_value, str):
                 current_value = current_value.lower() in ('true', '1', 'yes', 'on')
             else:
                 current_value = bool(current_value)
         else:
-            current_value = enabled  # Use enabled state as default for boolean constraints
-            
+            current_value = enabled
         value = st.checkbox(
-            f"Enable {constraint_name}",  # Keep consistent naming with other constraints
+            f"Enable {constraint_name}",
             value=current_value,
             key=value_key,
             help=constraint_config.get("description", "")
         )
-        
-        # For boolean constraints, if the checkbox is checked, the constraint is enabled and set to true
-        return value, value
-    
-    # For non-boolean constraints, show enable checkbox first
+        error_message = ""
+        if value:
+            error_message = st.text_input(
+                f"Error message for {constraint_name}",
+                value=existing_error if existing_error is not None else "",
+                key=error_key,
+                help="Message shown when this constraint is violated."
+            )
+        return (value, value, error_message)
+
     is_enabled = st.checkbox(
         f"Enable {constraint_name}",
         value=enabled,
         key=enable_key,
         help=constraint_config.get("description", "")
     )
-    
+
     if not is_enabled:
-        return None, False
-    
-    # Render appropriate input based on constraint type
+        return (None, False, "")
+
     if constraint_config["type"] == "number":
-        # Ensure current_value is a valid number
         if current_value is not None:
             try:
                 current_value = float(current_value) if isinstance(current_value, str) else current_value
-                if constraint_config.get("step", 1) == 1:  # Integer input
+                if constraint_config.get("step", 1) == 1:
                     current_value = int(current_value)
             except (ValueError, TypeError):
                 current_value = constraint_config.get("min", 0)
         else:
             current_value = constraint_config.get("min", 0)
-            
         value = st.number_input(
             constraint_name,
             min_value=constraint_config.get("min", None),
@@ -638,8 +645,15 @@ def render_constraint_input(constraint_name, constraint_config, current_value, e
             value=str(current_value) if current_value is not None else "",
             key=value_key
         )
-    
-    return value, True
+
+    error_message = st.text_input(
+        f"Error message for {constraint_name}",
+        value=existing_error if existing_error is not None else "",
+        key=error_key,
+        help="Message shown when this constraint is violated."
+    )
+
+    return (value, True, error_message)
 
 def display_constraints():
     st.subheader("Constraints")
@@ -727,28 +741,25 @@ def display_constraints():
                     # Split constraints between two columns
                     for i, (constraint_name, constraint_config) in enumerate(constraint_items):
                         col = col1 if i < mid_point else col2
-                        
                         with col:
                             # Get existing values
                             existing_enabled = existing_constraints.get(constraint_name, {}).get("enabled", False)
                             existing_value = existing_constraints.get(constraint_name, {}).get("value")
-                            
-                            # Use current SHACL value if no custom constraint exists
+                            existing_error = existing_constraints.get(constraint_name, {}).get("error_message", "")
                             if not existing_enabled and constraint_name in current_values:
                                 display_value = current_values[constraint_name]
                                 existing_enabled = True
                             else:
                                 display_value = existing_value
-                            
                             key_prefix = f"{constraints_key}_{constraint_name}"
-                            value, is_enabled = render_constraint_input(
-                                constraint_name, 
-                                constraint_config, 
-                                display_value, 
-                                existing_enabled, 
-                                key_prefix
+                            value, is_enabled, error_message = render_constraint_input(
+                                constraint_name,
+                                constraint_config,
+                                display_value,
+                                existing_enabled,
+                                key_prefix,
+                                existing_error
                             )
-                            
                             if is_enabled and value is not None:
                                 updated_constraints[constraint_name] = {
                                     "value": value,
@@ -756,15 +767,13 @@ def display_constraints():
                                     "shape": str(shape),
                                     "class": str(class_uri),
                                     "property": str(prop_uri),
-                                    "datatype": str(datatype) if datatype else None
+                                    "datatype": str(datatype) if datatype else None,
+                                    "error_message": error_message
                                 }
-                    
-                    # Update session state
                     if updated_constraints:
                         st.session_state.property_constraints[constraints_key] = updated_constraints
                     elif constraints_key in st.session_state.property_constraints:
                         del st.session_state.property_constraints[constraints_key]
-                    
                     st.markdown("---")
 
 def get_label(uri, graph):
