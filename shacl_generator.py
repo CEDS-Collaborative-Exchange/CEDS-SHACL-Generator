@@ -29,6 +29,8 @@ def app():
         st.session_state.property_graph = None
     if "property_constraints" not in st.session_state:
         st.session_state.property_constraints = {}
+    if "existing_shacl" not in st.session_state:
+        st.session_state.existing_shacl = Graph()
 
 
     page = st.sidebar.radio("Go to", ["Ontology Files", "Class and Property Menu", "Constraints", "SHACL"])
@@ -39,7 +41,7 @@ def app():
         display_classes_and_properties()
     elif page == "Constraints":
         display_constraints()
-    elif page == "SHACL":
+    elif page == "SHACL":   
         show_SHACL()
 
 

@@ -22,3 +22,24 @@ def get_properties_for_class(class_uri, graph):
     for prop in graph.subjects(Namespace("https://schema.org/").domainIncludes, URIRef(class_uri)):
         properties.append(prop)
     return properties
+
+def get_properties_for_class_deep(class_uri, graph):
+    """Get properties associated with a class using domainIncludes."""
+    properties = []
+    # Initialize with properties directly associated with the class
+    properties = get_properties_for_class(class_uri, graph)
+
+    # Recursively get properties from parent classes
+    class_chain = get_parent_classes(class_uri, graph)
+    for parent_class in class_chain:
+        properties.extend(get_properties_for_class(parent_class, graph))
+        
+    # Ensure the list contains unique properties
+    return list(set(properties))
+
+def get_parent_classes(class_uri, graph):
+    """Get parent classes for a given class URI."""
+    parents = set()
+    for parent in graph.transitive_objects(URIRef(class_uri), RDFS.subClassOf):
+        parents.add(str(parent))
+    return parents
