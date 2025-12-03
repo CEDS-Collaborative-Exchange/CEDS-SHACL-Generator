@@ -210,43 +210,46 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = g.subjects(RDF.type, RDFS.Class)
-        
         for range_uri in ranges:
-            is_ceds_class = "#C" in str(range_uri)
-            option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
+            # Add the proprety shape to the class node shape
+            g1.add((class_node_title, SH.property, prop_shape))
 
-            if is_ceds_class:
-                if option_set and any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                    # This is an option set - include if has truly custom constraints
-                    if has_truly_custom_constraints:
-                        should_include_property = True
-                        # Override property shape with sh:in
+            # Check if the range is a class and not a datatype.  No need to redefine the datatype in SHACL as they are defined in the common PropertyShapes.ttl file
+            if "#C" in str(range_uri):
+
+                # Check if the property is a option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
+                option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
+                if len(option_set) > 0:
+                    if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
+                        # If there is a CEPI option set value in the "cepi" namespace, override the property shape's "sh:in" constraint
                         option_set_node = BNode()
                         Collection(g1, option_set_node, option_set)
+
                         g1.add((prop_shape, SH["in"], option_set_node))
+
+
+                # If the range is an RDFS Class, meaning it's a CEDS Class and NOT an option set, create a property shape for it
                 elif range_uri in classes:
-                    # This points to another class - always include (IRI node kind)
-                    should_include_property = True
-                    is_iri_node_kind = True
-                    g1.add((prop_shape, RDF.type, SH.PropertyShape))
-                    g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+                        g1.add((prop_shape, RDF.type, SH.PropertyShape))
+                        g1.add((prop_shape, SH.path, URIRef(prop_uri)))
 
-                    range_notation = next(g.objects(range_uri, SKOS.notation), None)
-                    if not range_notation:
-                        logger.warning(f"No skos:notation found for range URI: {range_uri}")
-                        continue
+                        range_notation = next(g.objects(range_uri, SKOS.notation), None)
 
-                    for prefix, uri in g.namespaces():
-                        if str(range_uri).startswith(str(uri)):
-                            range_namespace = uri
-                            break
-                    else:
-                        range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
+                        if not range_notation:
+                            logger.warning(f"No skos:notation found for range URI: {range_uri}")
+                            continue
 
-                    range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
+                        for prefix, uri in g.namespaces():
+                            if str(range_uri).startswith(str(uri)):
+                                range_namespace = uri
+                                break
+                        else:
+                            range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
 
-                    g1.add((prop_shape, SH["class"], URIRef(range_uri)))
-                    g1.add((prop_shape, SH["node"], range_shape))
+                        range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
+
+                        g1.add((prop_shape, SH["class"], URIRef(range_uri)))
+                        g1.add((prop_shape, SH["node"], range_shape))
 
                     if str(range_uri) not in class_property_map:
                         g1.add((prop_shape, SH.nodeKind, SH.IRI))
@@ -754,7 +757,16 @@ def display_constraints():
         class_label = get_label(class_uri, combined_graph)
         with st.expander(f"Class: {class_label}"):
             for prop_uri in properties:
+                # Find PropertyShape(s) that have sh:path = this property
                 shapes = list(property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
+                # Skip property if any associated shape has sh:nodeKind sh:IRI
+                skip_due_to_nodekind = any(
+                    property_graph.value(shape, SH.nodeKind) == SH.IRI
+                    for shape in shapes
+                )
+                if skip_due_to_nodekind:
+                    continue
+
                 prop_label = get_label(prop_uri, combined_graph)
                 st.markdown(f"#### Property: {prop_label} (`{prop_uri}`)")
 
@@ -780,8 +792,6 @@ def display_constraints():
                     
                     st.markdown("**Standard Shape Properties:**")
                     for p, o in property_graph.predicate_objects(subject=shape):
-                        if p in editable_predicates:
-                            continue
                         p_label = get_label(p, property_graph)
                         o_label = get_label(o, property_graph)
                         st.write(f"- **{p_label}**: {o_label}")
@@ -1071,19 +1081,16 @@ def generate_sample_jsonld(shacl_content):
         for node_shape in g.subjects(RDF.type, SH.NodeShape):
             target_class = next(g.objects(node_shape, SH.targetClass), None)
             if target_class:
-                class_name = str(target_class).split("/")[-1].strip()  # Clean class name
+                class_name = str(target_class).split("/")[-1]
                 sample_jsonld[class_name] = {}
                 for prop_shape in g.objects(node_shape, SH.property):
                     path = next(g.objects(prop_shape, SH.path), None)
                     if path:
-                        property_name = str(path).split("/")[-1].strip()  # Clean property name
+                        property_name = str(path).split("/")[-1]
                         sample_jsonld[class_name][property_name] = "Sample Value"
 
-        # Serialize the JSON-LD document without unnecessary spaces
-        return json.dumps(sample_jsonld, indent=4, separators=(',', ':'))
+        return json.dumps(sample_jsonld, indent=4)
     except Exception as e:
         st.error(f"Failed to generate JSON-LD: {e}")
         return None
-
-
 
