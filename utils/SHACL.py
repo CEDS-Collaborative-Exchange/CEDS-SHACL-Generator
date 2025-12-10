@@ -207,6 +207,9 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         return
 
     class_node_title = URIRef(f"{shacl_namespace}{class_notation}Shape")
+    
+    # Get property graph from cache to check if shapes already exist
+    property_graph = get_cached_graph(st.session_state.property_graph_id) if st.session_state.get("property_graph_id") else None
 
     for prop_uri in property_uris:
         ranges = list(g.objects(URIRef(prop_uri), SDO.rangeIncludes))
@@ -223,11 +226,17 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         else:
             prop_namespace = str(prop_uri).rsplit("#", 1)[0] + "#"
 
+        # Always use human-readable shape name based on property notation
         prop_shape = URIRef(f"{prop_namespace}{prop_notation}Shape")
-
-        # Always add basic PropertyShape definition for re-importability
-        g1.add((prop_shape, RDF.type, SH.PropertyShape))
-        g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+        
+        # Check if this property already has a shape defined in the PropertyShapes.ttl file
+        property_exists_in_shapes_file = False
+        if property_graph and len(property_graph) > 0:
+            # Look for a shape with sh:path pointing to this property
+            shapes_for_prop = list(property_graph.subjects(SH.path, URIRef(prop_uri)))
+            if shapes_for_prop:
+                # Property exists in shapes file - don't need to redefine unless custom constraints
+                property_exists_in_shapes_file = True
 
         # Determine if there are any truly custom constraints (not just defaults from property graph)
         constraints_key = f"{class_uri}::{prop_uri}"
@@ -236,9 +245,6 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         # Check if constraints are truly custom by comparing with property graph defaults
         has_truly_custom_constraints = False
         custom_constraints_to_add = {}  # Store only the truly custom constraints
-        
-        # Get property graph from cache using ID
-        property_graph = get_cached_graph(st.session_state.property_graph_id) if st.session_state.get("property_graph_id") else None
         
         if constraints and property_graph and len(property_graph) > 0:
             # Find the shape in the property graph for this property
@@ -315,65 +321,69 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 if has_truly_custom_constraints:
                     break
 
-        # Check if this property should be included based on criteria:
-        # 1. Has truly custom constraints (different from property graph defaults), OR
-        # 2. Is an IRI node kind (points to another class)
-        should_include_property = False
-        is_iri_node_kind = False
+        # Always add the property shape reference to the class NodeShape
+        g1.add((class_node_title, SH.property, prop_shape))
+        
+        # Determine if we need to create a PropertyShape definition in this file
+        # - If property exists in PropertyShapes.ttl and has NO custom constraints: don't create definition
+        # - If property does NOT exist in PropertyShapes.ttl: create full definition
+        # - If property has custom constraints: create definition with those constraints
+        needs_shape_definition = not property_exists_in_shapes_file or has_truly_custom_constraints
+        
+        # Track additional constraints from range processing
+        additional_constraints = []
         
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
-        classes = g.subjects(RDF.type, RDFS.Class)
+        classes = list(g.subjects(RDF.type, RDFS.Class))
         for range_uri in ranges:
-            # Add the proprety shape to the class node shape
-            g1.add((class_node_title, SH.property, prop_shape))
 
-            # Check if the range is a class and not a datatype.  No need to redefine the datatype in SHACL as they are defined in the common PropertyShapes.ttl file
+            # Check if the range is a class and not a datatype
             if "#C" in str(range_uri):
 
-                # Check if the property is a option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
+                # Check if the property is an option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
                 option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
                 if len(option_set) > 0:
                     if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
-                        # If there is a CEPI option set value in the "cepi" namespace, override the property shape's "sh:in" constraint
+                        # Custom option set - needs its own definition
+                        needs_shape_definition = True
                         option_set_node = BNode()
                         Collection(g1, option_set_node, option_set)
+                        additional_constraints.append((SH["in"], option_set_node))
 
-                        g1.add((prop_shape, SH["in"], option_set_node))
-
-
-                # If the range is an RDFS Class, meaning it's a CEDS Class and NOT an option set, add class/node constraints
+                # If the range is an RDFS Class (CEDS Class, not option set), add class/node constraints
                 elif range_uri in classes:
-                        range_notation = next(g.objects(range_uri, SKOS.notation), None)
+                    needs_shape_definition = True
+                    range_notation = next(g.objects(range_uri, SKOS.notation), None)
 
-                        if not range_notation:
-                            logger.warning(f"No skos:notation found for range URI: {range_uri}")
-                            continue
+                    if not range_notation:
+                        logger.warning(f"No skos:notation found for range URI: {range_uri}")
+                        continue
 
-                        for prefix, uri in g.namespaces():
-                            if str(range_uri).startswith(str(uri)):
-                                range_namespace = uri
-                                break
-                        else:
-                            range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
+                    for prefix, uri in g.namespaces():
+                        if str(range_uri).startswith(str(uri)):
+                            range_namespace = uri
+                            break
+                    else:
+                        range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
 
-                        range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
+                    range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
 
-                        g1.add((prop_shape, SH["class"], URIRef(range_uri)))
-                        g1.add((prop_shape, SH["node"], range_shape))
+                    additional_constraints.append((SH["class"], URIRef(range_uri)))
+                    additional_constraints.append((SH["node"], range_shape))
 
-                        if str(range_uri) not in class_property_map:
-                            g1.add((prop_shape, SH.nodeKind, SH.IRI))
-            else:
-                # Not a CEDS class - include only if has truly custom constraints
-                if has_truly_custom_constraints:
-                    should_include_property = True
+                    if str(range_uri) not in class_property_map:
+                        additional_constraints.append((SH.nodeKind, SH.IRI))
 
-        # Always add the property shape to the class node's property attribute
-        g1.add((class_node_title, SH.property, prop_shape))
-
-        # Only add custom constraints if this property meets inclusion criteria
-        if should_include_property:
-            # Add only truly custom constraints (those that differ from defaults)
+        # Only create PropertyShape definition if needed
+        if needs_shape_definition:
+            g1.add((prop_shape, RDF.type, SH.PropertyShape))
+            g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+            
+            # Add additional constraints from range processing
+            for predicate, obj in additional_constraints:
+                g1.add((prop_shape, predicate, obj))
+            
+            # Add custom constraints (those that differ from defaults)
             for constraint_name, constraint_data in custom_constraints_to_add.items():
                 shacl_predicate = getattr(SH, constraint_name, None)
                 if shacl_predicate:
@@ -733,6 +743,31 @@ def ontology_manager():
                                                 path = URIRef(potential_prop_uri)
                                                 strategy_used = "derived_from_uri_ontology"
                                                 import_stats["properties_from_uri"] += 1
+                            
+                            # Strategy 4: Look up property by skos:notation in combined_graph
+                            # Shape name like "DataCollectionAcademicSchoolYearShape" -> notation "DataCollectionAcademicSchoolYear"
+                            if path is None:
+                                combined_graph_check = get_cached_graph(st.session_state.combined_graph_id) if st.session_state.get("combined_graph_id") else None
+                                if combined_graph_check and len(combined_graph_check) > 0:
+                                    prop_shape_str = str(prop_shape)
+                                    if prop_shape_str.endswith("Shape"):
+                                        # Extract the notation (remove namespace and "Shape" suffix)
+                                        if "#" in prop_shape_str:
+                                            shape_local = prop_shape_str.split("#")[-1]
+                                        else:
+                                            shape_local = prop_shape_str.split("/")[-1]
+                                        potential_notation = shape_local[:-5]  # Remove "Shape"
+                                        
+                                        # Search for property with this skos:notation
+                                        for prop_subj in combined_graph_check.subjects(SKOS.notation, Literal(potential_notation)):
+                                            # Verify it's a property (has domainIncludes or rangeIncludes)
+                                            if (combined_graph_check.value(prop_subj, SDO.domainIncludes) or 
+                                                combined_graph_check.value(prop_subj, SDO.rangeIncludes)):
+                                                path = prop_subj
+                                                strategy_used = "notation_lookup"
+                                                import_stats["properties_from_uri"] += 1
+                                                logger.debug(f"Found path via notation lookup: {potential_notation} -> {path}")
+                                                break
                             
                             if path is not None:
                                 properties.add(str(path))
