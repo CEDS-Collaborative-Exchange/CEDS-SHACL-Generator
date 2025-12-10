@@ -8,29 +8,28 @@ from utils.SHACL import (
 )
 
 
-# Set page configuration to collapse the sidebar by default, set the tab title, and add an icon
 st.set_page_config(
-    page_title="OM",  # Set the tab title to "OM"
-    page_icon="🌐",  # Use a globe icon to represent ontology
+    page_title="OM",
+    page_icon="🌐",
     layout="wide"
 )
 
 def app():
-    # Initialize session state variables
+    # Initialize session state
     if "file_list" not in st.session_state:
         st.session_state.file_list = []
-    if "combined_graph" not in st.session_state:
-        st.session_state.combined_graph = Graph()
+    if "combined_graph_id" not in st.session_state:
+        st.session_state.combined_graph_id = None
     if "class_property_map" not in st.session_state:
         st.session_state.class_property_map = {}
     if "SHACL_content" not in st.session_state:
         st.session_state.SHACL_content = ""
-    if "property_graph" not in st.session_state:
-        st.session_state.property_graph = None
+    if "property_graph_id" not in st.session_state:
+        st.session_state.property_graph_id = None
     if "property_constraints" not in st.session_state:
         st.session_state.property_constraints = {}
-    if "existing_shacl" not in st.session_state:
-        st.session_state.existing_shacl = Graph()
+    if "existing_shacl_id" not in st.session_state:
+        st.session_state.existing_shacl_id = None
 
 
     page = st.sidebar.radio("Go to", ["Ontology Files", "Class and Property Menu", "Constraints", "SHACL"])
