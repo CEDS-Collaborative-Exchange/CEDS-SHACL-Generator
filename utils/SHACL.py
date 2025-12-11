@@ -17,6 +17,37 @@ logger = logging.getLogger(__name__)
 
 namespaces = {}
 
+# Standard namespaces to skip when extracting (RDFLib adds these automatically)
+STANDARD_NS_PREFIXES = {'xml', 'rdf', 'rdfs', 'xsd'}
+
+
+def sync_namespaces_from_graph(graph: Graph) -> dict:
+    """Extract all custom namespaces from a graph and sync to global namespaces dict.
+    
+    Returns dict of {prefix: namespace_uri} that were added.
+    """
+    global namespaces
+    added = {}
+    
+    for prefix, ns_uri in graph.namespace_manager.namespaces():
+        # Skip standard/default namespaces
+        if not prefix or prefix in STANDARD_NS_PREFIXES:
+            continue
+        
+        ns_str = str(ns_uri)
+        
+        # Add to global namespaces if not already present
+        if prefix not in namespaces:
+            namespaces[prefix] = Namespace(ns_str)
+            added[prefix] = ns_str
+            logger.debug(f"Extracted namespace: {prefix} -> {ns_str}")
+    
+    if added:
+        logger.info(f"Synced {len(added)} namespaces from graph: {list(added.keys())}")
+    
+    return added
+
+
 # Cached graph parsing functions
 
 @st.cache_resource(show_spinner=False)
@@ -28,12 +59,17 @@ def _parse_ontology_file(_file_content: bytes, format: str, file_name: str) -> G
     return graph
 
 
-@st.cache_resource(show_spinner=False)
 def _combine_graphs(_graph_list: list) -> Graph:
-    """Combine multiple RDF graphs into a single cached graph."""
+    """Combine multiple RDF graphs into a single graph.
+    
+    Automatically propagates all namespaces from source graphs.
+    """
     combined = Graph()
-    for graph, ns_url, ns_shortname in _graph_list:
-        combined.namespace_manager.bind(ns_shortname, Namespace(ns_url))
+    for graph in _graph_list:
+        # Copy all namespaces from source graph
+        for prefix, ns_uri in graph.namespace_manager.namespaces():
+            if prefix:  # Skip default namespace
+                combined.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
         combined += graph
     logger.info(f"Combined {len(_graph_list)} graphs with {len(combined)} triples")
     return combined
@@ -62,6 +98,50 @@ def get_cached_graph(graph_id: str) -> Graph:
     if graph_id and graph_id not in cache:
         logger.warning(f"Graph '{graph_id}' not found in cache")
     return graph
+
+
+# Preloaded data file paths
+DATA_DIR = Path(__file__).parent.parent / "data"
+PRELOAD_ONTOLOGY_FILE = DATA_DIR / "CEDS-Ontology.rdf"
+PRELOAD_PROPERTY_FILE = DATA_DIR / "PropertyShapes.ttl"
+
+
+@st.cache_resource(show_spinner=False)
+def _load_preloaded_ontology() -> Optional[Graph]:
+    """Load the preloaded CEDS ontology if available."""
+    if PRELOAD_ONTOLOGY_FILE.exists():
+        try:
+            graph = Graph()
+            graph.parse(str(PRELOAD_ONTOLOGY_FILE), format="xml")
+            logger.info(f"Preloaded CEDS ontology with {len(graph)} triples")
+            return graph
+        except Exception as e:
+            logger.error(f"Failed to load preloaded ontology: {e}")
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def _load_preloaded_property_shapes() -> Optional[Graph]:
+    """Load the preloaded property shapes if available."""
+    if PRELOAD_PROPERTY_FILE.exists():
+        try:
+            graph = Graph()
+            graph.parse(str(PRELOAD_PROPERTY_FILE), format="turtle")
+            logger.info(f"Preloaded property shapes with {len(graph)} triples")
+            return graph
+        except Exception as e:
+            logger.error(f"Failed to load preloaded property shapes: {e}")
+    return None
+
+
+def check_preloaded_files() -> dict:
+    """Check which preloaded files are available."""
+    return {
+        "ontology": PRELOAD_ONTOLOGY_FILE.exists(),
+        "property_shapes": PRELOAD_PROPERTY_FILE.exists(),
+        "ontology_path": str(PRELOAD_ONTOLOGY_FILE),
+        "property_shapes_path": str(PRELOAD_PROPERTY_FILE)
+    }
 
 
 @st.cache_data(show_spinner=False)
@@ -246,80 +326,90 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         has_truly_custom_constraints = False
         custom_constraints_to_add = {}  # Store only the truly custom constraints
         
-        if constraints and property_graph and len(property_graph) > 0:
-            # Find the shape in the property graph for this property
-            property_shapes = list(property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
+        if constraints:
+            # Find the shape in the property graph for this property (if property_graph exists)
+            property_shapes_in_graph = []
+            if property_graph and len(property_graph) > 0:
+                property_shapes_in_graph = list(property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
             
-            for prop_graph_shape in property_shapes:
-                for constraint_name, constraint_data in constraints.items():
-                    if constraint_data.get("enabled", False):
-                        shacl_predicate = getattr(SH, constraint_name, None)
-                        if shacl_predicate:
-                            # Get the default value from the property graph
-                            default_value = property_graph.value(prop_graph_shape, shacl_predicate)
-                            user_value = constraint_data["value"]
-                            
-                            is_custom = False
-                            
-                            # Convert both to comparable types
-                            if default_value is not None:
-                                default_python_value = convert_rdf_literal_to_python(default_value)
-                                
-                                # Compare values - if they're different, it's a custom constraint
-                                if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
-                                    try:
-                                        uv = int(user_value) if user_value is not None else None
-                                        dv = int(default_python_value) if default_python_value is not None else None
-                                    except Exception:
-                                        uv = str(user_value)
-                                        dv = str(default_python_value)
-                                    if uv != dv:
-                                        is_custom = True
-                                elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
-                                    try:
-                                        uvf = float(user_value) if user_value is not None else None
-                                        dvf = float(default_python_value) if default_python_value is not None else None
-                                    except Exception:
-                                        uvf = str(user_value)
-                                        dvf = str(default_python_value)
-                                    if uvf != dvf:
-                                        is_custom = True
-                                elif constraint_name == "pattern":
-                                    if str(user_value) != str(default_python_value):
-                                        is_custom = True
-                                elif constraint_name == "uniqueLang":
-                                    if bool(user_value) != bool(default_python_value):
-                                        is_custom = True
-                                elif constraint_name == "nodeKind":
-                                    # Compare node kind values
-                                    node_kind_map = {
-                                        "IRI": SH.IRI,
-                                        "BlankNode": SH.BlankNode,
-                                        "Literal": SH.Literal,
-                                        "BlankNodeOrIRI": SH.BlankNodeOrIRI,
-                                        "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
-                                        "IRIOrLiteral": SH.IRIOrLiteral
-                                    }
-                                    user_node_kind = node_kind_map.get(str(user_value), SH.IRI)
-                                    if user_node_kind != default_value:
-                                        is_custom = True
-                                elif constraint_name == "languageIn":
-                                    # Compare language lists
-                                    if str(user_value) != str(default_python_value):
-                                        is_custom = True
-                                else:
-                                    if str(user_value) != str(default_python_value):
-                                        is_custom = True
-                            else:
-                                # No default value exists, so any user value is custom
-                                is_custom = True
-                            
-                            if is_custom:
-                                has_truly_custom_constraints = True
-                                custom_constraints_to_add[constraint_name] = constraint_data
+            # Process each constraint the user has set
+            for constraint_name, constraint_data in constraints.items():
+                if not constraint_data.get("enabled", False):
+                    continue
+                    
+                shacl_predicate = getattr(SH, constraint_name, None)
+                if not shacl_predicate:
+                    continue
+                    
+                user_value = constraint_data["value"]
+                is_custom = False
                 
-                if has_truly_custom_constraints:
-                    break
+                # If no shapes exist in property graph, any user constraint is custom
+                if not property_shapes_in_graph:
+                    is_custom = True
+                    logger.debug(f"Constraint {constraint_name}={user_value} is custom (no shape in property graph)")
+                else:
+                    # Compare with default values from property graph
+                    for prop_graph_shape in property_shapes_in_graph:
+                        default_value = property_graph.value(prop_graph_shape, shacl_predicate)
+                        
+                        if default_value is not None:
+                            default_python_value = convert_rdf_literal_to_python(default_value)
+                            
+                            # Compare values - if they're different, it's a custom constraint
+                            if constraint_name in ["minCount", "maxCount", "minLength", "maxLength"]:
+                                try:
+                                    uv = int(user_value) if user_value is not None else None
+                                    dv = int(default_python_value) if default_python_value is not None else None
+                                except Exception:
+                                    uv = str(user_value)
+                                    dv = str(default_python_value)
+                                if uv != dv:
+                                    is_custom = True
+                            elif constraint_name in ["minInclusive", "maxInclusive", "minExclusive", "maxExclusive"]:
+                                try:
+                                    uvf = float(user_value) if user_value is not None else None
+                                    dvf = float(default_python_value) if default_python_value is not None else None
+                                except Exception:
+                                    uvf = str(user_value)
+                                    dvf = str(default_python_value)
+                                if uvf != dvf:
+                                    is_custom = True
+                            elif constraint_name == "pattern":
+                                if str(user_value) != str(default_python_value):
+                                    is_custom = True
+                            elif constraint_name == "uniqueLang":
+                                if bool(user_value) != bool(default_python_value):
+                                    is_custom = True
+                            elif constraint_name == "nodeKind":
+                                node_kind_map = {
+                                    "IRI": SH.IRI,
+                                    "BlankNode": SH.BlankNode,
+                                    "Literal": SH.Literal,
+                                    "BlankNodeOrIRI": SH.BlankNodeOrIRI,
+                                    "BlankNodeOrLiteral": SH.BlankNodeOrLiteral,
+                                    "IRIOrLiteral": SH.IRIOrLiteral
+                                }
+                                user_node_kind = node_kind_map.get(str(user_value), SH.IRI)
+                                if user_node_kind != default_value:
+                                    is_custom = True
+                            elif constraint_name == "languageIn":
+                                if str(user_value) != str(default_python_value):
+                                    is_custom = True
+                            else:
+                                if str(user_value) != str(default_python_value):
+                                    is_custom = True
+                        else:
+                            # No default value exists in property graph, so user value is custom
+                            is_custom = True
+                        
+                        # Only need to check one shape
+                        break
+                
+                if is_custom:
+                    has_truly_custom_constraints = True
+                    custom_constraints_to_add[constraint_name] = constraint_data
+                    logger.debug(f"Adding custom constraint: {constraint_name}={user_value}")
 
         # Always add the property shape reference to the class NodeShape
         g1.add((class_node_title, SH.property, prop_shape))
@@ -470,6 +560,49 @@ def initialize_graphs(ceds_path, extension_path):
 
 def ontology_manager():
     st.subheader("Manage Ontology Files")
+    
+    # Check for preloaded files and show status
+    preload_status = check_preloaded_files()
+    
+    # Show loaded file status
+    ontology_loaded = st.session_state.get("preloaded_ontology_loaded", False)
+    property_loaded = st.session_state.get("preloaded_property_loaded", False)
+    
+    if ontology_loaded or property_loaded:
+        st.markdown("**Preloaded Files:**")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if ontology_loaded:
+                combined_graph = get_cached_graph(st.session_state.combined_graph_id)
+                st.success(f"✅ CEDS Ontology ({len(combined_graph):,} triples)")
+            elif preload_status["ontology"]:
+                st.warning("⚠️ CEDS Ontology available but not loaded")
+            else:
+                st.info("📁 Place CEDS-Ontology.rdf in data/ folder")
+        
+        with col2:
+            if property_loaded:
+                property_graph = get_cached_graph(st.session_state.property_graph_id)
+                st.success(f"✅ Property Shapes ({len(property_graph):,} triples)")
+            elif preload_status["property_shapes"]:
+                st.warning("⚠️ Property Shapes available but not loaded")
+            else:
+                st.info("📁 Place PropertyShapes.ttl in data/ folder")
+        
+        st.markdown("---")
+    
+    # Extension ontology section as fragment
+    _extension_ontology_fragment()
+    
+    # Existing SHACL import section as fragment
+    _existing_shacl_fragment()
+
+
+@st.fragment
+def _extension_ontology_fragment():
+    """Fragment for extension ontology file uploads - runs independently."""
+    st.markdown("**Upload Extension Ontology Files:**")
 
     uploaded_ontology_files = st.file_uploader(
         "Upload Ontology Files",
@@ -477,125 +610,69 @@ def ontology_manager():
         accept_multiple_files=True
     )
 
-    existing_file_ids = {f[0].file_id for f in st.session_state.file_list}
-
-    # Append new files with defaults
+    # Auto-merge when files are uploaded
     if uploaded_ontology_files:
-        for file in uploaded_ontology_files:
-            if file.file_id not in existing_file_ids:
-                st.session_state.file_list.append(
-                    (file, "http://ceds.ed.gov/terms#", "ceds")
-                )
-
-    # Rebuild list with updated text box values
-    updated_list = []
-    for file, namespace_url, namespace_shortname in st.session_state.file_list:
-        url_key = f"url_{file.file_id}"
-        short_key = f"short_{file.file_id}"
-
-        # Use saved values directly as the default
-        namespace_url_input = st.text_input(
-            f"Namespace URL for {file.name}",
-            value=namespace_url,
-            key=url_key
-        )
+        # Check for new files
+        existing_file_ids = {f.file_id for f in st.session_state.file_list}
+        new_files = [f for f in uploaded_ontology_files if f.file_id not in existing_file_ids]
         
-        # Validate URL format
-        import re
-        url_pattern = re.compile(r'^https?://[^\s]+$')
-        if namespace_url_input and not url_pattern.match(namespace_url_input):
-            st.error(f"Invalid URL format for {file.name}. Must start with http:// or https://")
-            namespace_url_input = namespace_url  # Revert to previous valid value
-        
-        namespace_shortname_input = st.text_input(
-            f"Namespace Shortname for {file.name}",
-            value=namespace_shortname,
-            key=short_key
-        )
-        
-        # Validate shortname (alphanumeric and underscores only)
-        shortname_pattern = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
-        if namespace_shortname_input and not shortname_pattern.match(namespace_shortname_input):
-            st.error(f"Invalid shortname for {file.name}. Must start with a letter or underscore and contain only alphanumeric characters and underscores.")
-            namespace_shortname_input = namespace_shortname  # Revert to previous valid value
-
-        updated_list.append((file, namespace_url_input, namespace_shortname_input))
-
-    st.session_state.file_list = updated_list
-
-    # Button to load ontologies using the stored file list
-    if st.button("Load Ontologies"):
-        graph = load_ontologies(st.session_state.file_list)
-        if len(graph) > 0:
-            # Create unique ID and store graph in cache (not session state)
-            import hashlib
-            # Use N-Triples serialization for consistent hashing
-            graph_hash = hashlib.md5(graph.serialize(format='nt').encode()).hexdigest()[:16]
-            graph_id = f"combined_{graph_hash}_{len(graph)}"
-            store_graph(graph_id, graph)
-            st.session_state.combined_graph_id = graph_id
-            logger.info(f"Combined graph stored with ID: {graph_id}")
-
-    st.subheader("Upload Property File")
-
-    # Show a status message if a graph is already loaded
-    if st.session_state.get("property_graph_id"):
-        property_graph = get_cached_graph(st.session_state.property_graph_id)
-        if len(property_graph) > 0:
-            st.info("A SHACL property file is already loaded. Uploading a new file will replace it.")
-
-    # Always show the uploader
-    uploaded = st.file_uploader(
-        "Upload Property File",
-        type=["ttl", "rdf", "xml"],
-        accept_multiple_files=False
-    )
-
-    if uploaded is not None:
-        # Validate file size (max 100MB)
-        max_file_size = 100 * 1024 * 1024  # 100MB in bytes
-        if uploaded.size > max_file_size:
-            st.error(f"File '{uploaded.name}' is too large ({uploaded.size / 1024 / 1024:.2f}MB). Maximum allowed size is 100MB.")
-        else:
-            try:
-                file_content = uploaded.getvalue()
+        if new_files:
+            # Add new files to list
+            for file in new_files:
+                st.session_state.file_list.append(file)
+            
+            # Auto-load and merge
+            graph = load_ontologies(new_files)
+            if len(graph) > 0:
+                # Sync namespaces from the loaded graph
+                sync_namespaces_from_graph(graph)
                 
-                # Validate file is not empty
-                if not file_content:
-                    st.error(f"File '{uploaded.name}' is empty.")
-                    return
-
-                # Optional: detect format based on extension
-                def get_rdf_format(filename):
-                    ext = filename.split(".")[-1].lower()
-                    return {
-                        "ttl": "turtle",
-                        "rdf": "xml",
-                        "xml": "xml",
-                        "n3": "n3",
-                        "nt": "nt"
-                    }.get(ext, "turtle")
-
-                fmt = get_rdf_format(uploaded.name)
-
-                with st.spinner(f"Loading {uploaded.name}..."):
-                    g = _parse_ontology_file(file_content, fmt, uploaded.name)
+                # If we already have a preloaded graph, merge with it
+                existing_graph = get_cached_graph(st.session_state.combined_graph_id) if st.session_state.get("combined_graph_id") else Graph()
+                if len(existing_graph) > 0:
+                    # Create a new combined graph that preserves all namespaces
+                    merged_graph = Graph()
+                    
+                    # First copy namespaces from existing graph
+                    for prefix, ns_uri in existing_graph.namespace_manager.namespaces():
+                        if prefix:
+                            merged_graph.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+                    
+                    # Then copy namespaces from new graph (may add new prefixes)
+                    for prefix, ns_uri in graph.namespace_manager.namespaces():
+                        if prefix:
+                            merged_graph.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+                    
+                    # Add all triples from both graphs
+                    for triple in existing_graph:
+                        merged_graph.add(triple)
+                    for triple in graph:
+                        merged_graph.add(triple)
+                    
+                    graph = merged_graph
+                    st.success(f"Merged extension ontology. Total: {len(graph):,} triples")
                 
-                # Validate graph has content
-                if len(g) == 0:
-                    st.warning(f"File '{uploaded.name}' was parsed but contains no RDF triples.")
-                else:
-                    # Store in cache with ID to avoid session state hashing
-                    import hashlib
-                    graph_id = f"property_{hashlib.md5(file_content).hexdigest()}_{len(g)}"
-                    store_graph(graph_id, g)
-                    st.session_state.property_graph_id = graph_id
-                    st.success(f"SHACL file '{uploaded.name}' loaded successfully with {len(g)} triples.")
-            except Exception as e:
-                st.error(f"Failed to parse SHACL file '{uploaded.name}': {str(e)}")
-                logger.exception(f"Failed to parse property file: {e}")
+                # Store in session state (not cache) for easy refresh
+                st.session_state.extension_graph = graph
+                
+                # Update combined_graph_id to point to merged graph in cache
+                import hashlib
+                graph_hash = hashlib.md5(graph.serialize(format='nt').encode()).hexdigest()[:16]
+                graph_id = f"combined_{graph_hash}_{len(graph)}"
+                store_graph(graph_id, graph)
+                st.session_state.combined_graph_id = graph_id
+                logger.info(f"Combined graph stored with ID: {graph_id}")
 
-        st.subheader("Manage Ontology Files")
+    # Show uploaded files list
+    if st.session_state.file_list:
+        st.markdown("**Loaded Extension Files:**")
+        for file in st.session_state.file_list:
+            st.text(f"📄 {file.name}")
+
+@st.fragment
+def _existing_shacl_fragment():
+    """Fragment for existing SHACL import - runs independently."""
+    st.subheader("Import Existing SHACL")
 
     existing_shacl = st.file_uploader(
         "Update an Existing SHACL File",
@@ -795,15 +872,18 @@ def ontology_manager():
 
 
 def load_ontologies(file_list):
-    """Load all files from session_state into a combined RDF graph using cached parsing."""
+    """Load all files from session_state into a combined RDF graph using cached parsing.
+    
+    Namespaces are automatically extracted from each file - no manual input needed.
+    """
     # Validate file list is not empty
     if not file_list:
         st.warning("No ontology files to load.")
         return Graph()
 
-    parsed_graphs = []  # List of (Graph, namespace_url, namespace_shortname) tuples
+    parsed_graphs = []  # List of parsed Graph objects
     
-    for file, namespace_url, namespace_shortname in file_list:
+    for file in file_list:
         # Validate file size (max 100MB)
         max_file_size = 100 * 1024 * 1024  # 100MB in bytes
         if file.size > max_file_size:
@@ -830,13 +910,15 @@ def load_ontologies(file_list):
                 st.warning(f"File '{file.name}' was parsed but contains no RDF triples.")
                 continue
 
-            # Bind the namespace to global namespaces dict
-            add_namespace(namespaces, namespace_shortname, namespace_url)
+            # Auto-extract namespaces from the parsed graph
+            extracted_ns = sync_namespaces_from_graph(temp_graph)
             
-            # Store parsed graph with namespace info for combining
-            parsed_graphs.append((temp_graph, namespace_url, namespace_shortname))
-
-            st.success(f"Ontology file '{file.name}' loaded successfully with {len(temp_graph)} triples (namespace '{namespace_shortname}').")
+            # Store parsed graph for combining
+            parsed_graphs.append(temp_graph)
+            
+            # Show success with extracted namespaces info
+            ns_info = f" (namespaces: {', '.join(extracted_ns.keys())})" if extracted_ns else ""
+            st.success(f"Ontology file '{file.name}' loaded successfully with {len(temp_graph)} triples{ns_info}.")
 
         except Exception as e:
             st.error(f"Failed to load ontology file '{file.name}': {str(e)}")
@@ -1140,7 +1222,7 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
     """Fragment for constraint editing. Input changes only rerun this fragment."""
     class_label = labels.get(class_uri, class_uri)
     
-    with st.expander(f"Class: {class_label}", expanded=True):
+    with st.expander(f"Class: {class_label}", expanded=False):
         for prop_uri in properties:
             # Find PropertyShape(s) that have sh:path = this property
             shapes = list(property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
@@ -1216,6 +1298,10 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
                         path = property_graph.value(ps, SH.path)
 
                     if path == URIRef(prop_uri):
+                        # First, extract any sh:message from this property shape
+                        shape_message = existing_shacl.value(ps, SH.message)
+                        shape_message_str = str(shape_message) if shape_message else ""
+                        
                         for p, o in existing_shacl.predicate_objects(ps):
                             subject_predicate_pairs.append((ps, p))
                             if p in editable_predicates:
@@ -1227,7 +1313,8 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
                                         "shape": str(ps),
                                         "class": str(class_uri),
                                         "property": str(prop_uri),
-                                        "datatype": str(datatype) if datatype else None
+                                        "datatype": str(datatype) if datatype else None,
+                                        "error_message": shape_message_str
                                     }
 
                 # Load current values from the SHACL graph
@@ -1379,16 +1466,33 @@ def update_class_property_map(class_uri, prop, key):
 
 def generate_shacl():
     """Generate SHACL shapes from the selected class-property mappings."""
+    global namespaces
+    
     if not st.session_state.class_property_map:
         st.warning("No class-property mappings selected.")
         return None
 
     combined_graph = get_cached_graph(st.session_state.combined_graph_id) if st.session_state.combined_graph_id else Graph()
 
+    # Restore namespaces from combined_graph if module-level dict is empty (e.g., after hot reload)
+    if not namespaces and combined_graph:
+        for prefix, ns_uri in combined_graph.namespace_manager.namespaces():
+            if prefix:  # Skip default namespace
+                namespaces[prefix] = Namespace(str(ns_uri))
+        logger.info(f"Restored {len(namespaces)} namespaces from combined_graph after hot reload")
+
     g1 = Graph()
-    # Dynamically bind all namespaces from the `namespaces` dictionary
+    
+    # First, bind all namespaces from the combined_graph (source ontology)
+    # This ensures URIs like cepi:NI001571100001 in sh:in lists serialize with prefixes
+    if combined_graph:
+        for prefix, ns_uri in combined_graph.namespace_manager.namespaces():
+            if prefix:  # Skip default namespace
+                g1.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+    
+    # Then bind any additional namespaces from the global dict (may override/add)
     for prefix, namespace in namespaces.items():
-        g1.namespace_manager.bind(prefix, namespace)  # Bind namespaces to the SHACL graph
+        g1.namespace_manager.bind(prefix, namespace)
 
     shacl_namespace = namespaces.get("ceds", Namespace("http://ceds.ed.gov/terms#"))  # Default to CEDS namespace
     for class_uri, properties in st.session_state.class_property_map.items():
@@ -1491,14 +1595,131 @@ def generate_shacl():
                 if any(equals_node(o1, o2, p1) for o2 in candidates):
                     g1.remove((ns1, p1, o1))
 
-    # Serialize the SHACL graph to a string
+    # Serialize the SHACL graph with NodeShapes first, then PropertyShapes
+    # Pass combined_graph so we can copy its namespace bindings
     try:
-        shacl_content = g1.serialize(format="turtle")
+        shacl_content = serialize_shacl_sorted(g1, combined_graph)
         st.success("SHACL shapes generated successfully!")
         return shacl_content
     except Exception as e:
         st.error(f"Failed to generate SHACL: {e}")
         return None
+
+
+def _collect_blank_nodes(graph: Graph, start_node, collected: set) -> None:
+    """Recursively collect all blank nodes reachable from a starting node."""
+    for p, o in graph.predicate_objects(start_node):
+        if isinstance(o, BNode) and o not in collected:
+            collected.add(o)
+            _collect_blank_nodes(graph, o, collected)
+
+
+def serialize_shacl_sorted(graph: Graph, source_graph: Graph = None) -> str:
+    """Serialize SHACL graph with NodeShapes first, then PropertyShapes.
+    
+    Args:
+        graph: The SHACL graph to serialize
+        source_graph: Optional source ontology graph to copy namespace bindings from
+    """
+    # Copy namespace bindings from source_graph FIRST
+    # This ensures all prefixes used in URIs (like cepi:) are properly declared
+    if source_graph:
+        for prefix, ns_uri in source_graph.namespace_manager.namespaces():
+            if prefix:  # Skip default namespace
+                graph.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+    
+    # Get all NodeShapes and PropertyShapes
+    node_shapes = set(graph.subjects(RDF.type, SH.NodeShape))
+    property_shapes = set(graph.subjects(RDF.type, SH.PropertyShape))
+    
+    # Collect all blank nodes associated with each shape type
+    node_shape_bnodes = set()
+    for ns in node_shapes:
+        _collect_blank_nodes(graph, ns, node_shape_bnodes)
+    
+    prop_shape_bnodes = set()
+    for ps in property_shapes:
+        _collect_blank_nodes(graph, ps, prop_shape_bnodes)
+    
+    # Create separate graphs
+    node_graph = Graph()
+    prop_graph = Graph()
+    
+    # Copy namespace bindings to all sub-graphs
+    for prefix, namespace in graph.namespaces():
+        node_graph.namespace_manager.bind(prefix, namespace)
+        prop_graph.namespace_manager.bind(prefix, namespace)
+    
+    # Separate triples into NodeShape and PropertyShape graphs
+    for s, p, o in graph:
+        if s in node_shapes or s in node_shape_bnodes:
+            node_graph.add((s, p, o))
+        elif s in property_shapes or s in prop_shape_bnodes:
+            prop_graph.add((s, p, o))
+        elif isinstance(s, BNode):
+            # Orphan blank node - try to determine where it belongs
+            # Check if it's referenced by any property shape
+            is_prop_bnode = any(
+                (ps, pred, s) in graph 
+                for ps in property_shapes 
+                for pred in graph.predicates(ps)
+            )
+            if is_prop_bnode:
+                prop_graph.add((s, p, o))
+            else:
+                node_graph.add((s, p, o))
+        else:
+            # Other triples go to node graph
+            node_graph.add((s, p, o))
+    
+    # Serialize each graph
+    node_ttl = node_graph.serialize(format="turtle")
+    prop_ttl = prop_graph.serialize(format="turtle")
+    
+    # Merge prefix declarations from both serializations since RDFLib only emits
+    # @prefix for namespaces actually used in each graph's triples
+    # Merge prefix declarations from both serializations
+    all_prefixes = {}
+    for line in node_ttl.split('\n'):
+        if line.startswith('@prefix'):
+            # Extract prefix name
+            parts = line.split()
+            if len(parts) >= 2:
+                prefix_name = parts[1].rstrip(':')
+                all_prefixes[prefix_name] = line
+    for line in prop_ttl.split('\n'):
+        if line.startswith('@prefix'):
+            parts = line.split()
+            if len(parts) >= 2:
+                prefix_name = parts[1].rstrip(':')
+                if prefix_name not in all_prefixes:
+                    all_prefixes[prefix_name] = line
+    
+    # Build combined output with merged prefixes
+    prefix_lines = sorted(all_prefixes.values())
+    
+    # Extract triples (non-prefix lines) from node_graph
+    node_lines = node_ttl.split('\n')
+    node_triples = []
+    for line in node_lines:
+        if not line.startswith('@prefix'):
+            node_triples.append(line)
+    
+    # Extract triples from prop_graph  
+    prop_lines = prop_ttl.split('\n')
+    prop_triples = []
+    for line in prop_lines:
+        if not line.startswith('@prefix'):
+            prop_triples.append(line)
+    
+    # Combine: prefixes + node triples + prop triples
+    result_parts = prefix_lines + [''] + node_triples
+    if prop_triples:
+        # Add separator and prop triples
+        result_parts.append('')
+        result_parts.extend(prop_triples)
+    
+    return '\n'.join(result_parts).strip() + '\n'
 
 
 def generate_sample_jsonld(shacl_content):
