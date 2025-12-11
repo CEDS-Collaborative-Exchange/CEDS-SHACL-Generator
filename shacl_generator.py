@@ -36,42 +36,138 @@ def load_preloaded_files():
     if not files_to_load:
         return False  # Nothing to load
     
-    # Show loading screen with animation
+    # Show loading screen with animated network graph
     loading_container = st.empty()
     with loading_container.container():
         st.markdown("""
         <style>
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
         .loading-container {
             display: flex;
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 60px;
-        }
-        .loading-icon {
-            font-size: 80px;
-            animation: pulse 1.5s ease-in-out infinite;
+            padding: 40px;
         }
         .loading-title {
             font-size: 28px;
             font-weight: bold;
-            margin-top: 20px;
+            margin-top: 25px;
             color: #1f77b4;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .loading-subtitle {
-            font-size: 18px;
-            color: #666;
-            margin-top: 10px;
+        
+        /* Network Graph Animation */
+        .network-container {
+            width: 220px;
+            height: 220px;
+            position: relative;
         }
-        @keyframes dots {
-            0%, 20% { content: '.'; }
-            40% { content: '..'; }
-            60%, 100% { content: '...'; }
+        
+        /* Nodes - enhanced with gradients and shadows */
+        .node {
+            position: absolute;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4da3ff 0%, #1f77b4 50%, #0d4f80 100%);
+            box-shadow: 
+                0 4px 8px rgba(31, 119, 180, 0.4),
+                inset 0 2px 4px rgba(255,255,255,0.3),
+                inset 0 -2px 4px rgba(0,0,0,0.2);
+            opacity: 0;
+            transform: scale(0);
         }
+        
+        /* Center node - orange/gold gradient */
+        .node.center { 
+            left: 96px; top: 96px; 
+            width: 32px; height: 32px; 
+            background: linear-gradient(135deg, #ffb347 0%, #ff7f0e 50%, #cc5500 100%);
+            box-shadow: 
+                0 4px 12px rgba(255, 127, 14, 0.5),
+                0 0 20px rgba(255, 127, 14, 0.3),
+                inset 0 2px 4px rgba(255,255,255,0.4),
+                inset 0 -2px 4px rgba(0,0,0,0.2);
+        }
+        
+        /* Outer nodes positioned in hexagon pattern around center (112,112) */
+        .node.n1 { left: 98px; top: 20px; }    /* top */
+        .node.n2 { left: 168px; top: 56px; }   /* top-right */
+        .node.n3 { left: 168px; top: 140px; }  /* bottom-right */
+        .node.n4 { left: 98px; top: 176px; }   /* bottom */
+        .node.n5 { left: 28px; top: 140px; }   /* bottom-left */
+        .node.n6 { left: 28px; top: 56px; }    /* top-left */
+        
+        /* Edges - start from center (112,112) and connect to each node */
+        .edge {
+            position: absolute;
+            height: 3px;
+            background: linear-gradient(90deg, rgba(255,127,14,0.9) 0%, rgba(31,119,180,0.9) 100%);
+            border-radius: 2px;
+            transform-origin: left center;
+            opacity: 0;
+            box-shadow: 0 0 6px rgba(31, 119, 180, 0.4);
+        }
+        
+        /* Each edge: starts at center, rotates to point at target node */
+        /* Center is at (112, 112), edges start there */
+        .edge.e1 { left: 112px; top: 112px; width: 68px; transform: rotate(-90deg); }   /* to n1 (top) */
+        .edge.e2 { left: 112px; top: 112px; width: 74px; transform: rotate(-37deg); }   /* to n2 (top-right) */
+        .edge.e3 { left: 112px; top: 112px; width: 74px; transform: rotate(37deg); }    /* to n3 (bottom-right) */
+        .edge.e4 { left: 112px; top: 112px; width: 68px; transform: rotate(90deg); }    /* to n4 (bottom) */
+        .edge.e5 { left: 112px; top: 112px; width: 74px; transform: rotate(143deg); }   /* to n5 (bottom-left) */
+        .edge.e6 { left: 112px; top: 112px; width: 74px; transform: rotate(-143deg); }  /* to n6 (top-left) */
+        
+        /* Looping animation - builds up then fades and repeats */
+        @keyframes nodeLoop {
+            0% { opacity: 0; transform: scale(0); }
+            10% { opacity: 1; transform: scale(1.15); }
+            15% { opacity: 1; transform: scale(1); }
+            75% { opacity: 1; transform: scale(1); }
+            85% { opacity: 0; transform: scale(0.8); }
+            100% { opacity: 0; transform: scale(0); }
+        }
+        
+        @keyframes centerNodeLoop {
+            0% { opacity: 0; transform: scale(0); }
+            8% { opacity: 1; transform: scale(1.2); }
+            12% { opacity: 1; transform: scale(1); }
+            75% { opacity: 1; transform: scale(1); }
+            85% { opacity: 0; transform: scale(0.8); }
+            100% { opacity: 0; transform: scale(0); }
+        }
+        
+        @keyframes edgeLoopShort {
+            0% { opacity: 0; width: 0; }
+            15% { opacity: 1; width: 68px; }
+            75% { opacity: 1; width: 68px; }
+            85% { opacity: 0; width: 68px; }
+            100% { opacity: 0; width: 0; }
+        }
+        
+        @keyframes edgeLoopLong {
+            0% { opacity: 0; width: 0; }
+            15% { opacity: 1; width: 74px; }
+            75% { opacity: 1; width: 74px; }
+            85% { opacity: 0; width: 74px; }
+            100% { opacity: 0; width: 0; }
+        }
+        
+        /* 4 second total loop */
+        .node.center { animation: centerNodeLoop 4s ease-in-out 0s infinite; }
+        .node.n1 { animation: nodeLoop 4s ease-in-out 0.15s infinite; }
+        .node.n2 { animation: nodeLoop 4s ease-in-out 0.3s infinite; }
+        .node.n3 { animation: nodeLoop 4s ease-in-out 0.45s infinite; }
+        .node.n4 { animation: nodeLoop 4s ease-in-out 0.6s infinite; }
+        .node.n5 { animation: nodeLoop 4s ease-in-out 0.75s infinite; }
+        .node.n6 { animation: nodeLoop 4s ease-in-out 0.9s infinite; }
+        
+        .edge.e1 { animation: edgeLoopShort 4s ease-in-out 0.1s infinite; }
+        .edge.e2 { animation: edgeLoopLong 4s ease-in-out 0.25s infinite; }
+        .edge.e3 { animation: edgeLoopLong 4s ease-in-out 0.4s infinite; }
+        .edge.e4 { animation: edgeLoopShort 4s ease-in-out 0.55s infinite; }
+        .edge.e5 { animation: edgeLoopLong 4s ease-in-out 0.7s infinite; }
+        .edge.e6 { animation: edgeLoopLong 4s ease-in-out 0.85s infinite; }
         </style>
         """, unsafe_allow_html=True)
         
@@ -79,7 +175,23 @@ def load_preloaded_files():
         with col2:
             st.markdown("""
             <div class="loading-container">
-                <div class="loading-icon">🔮</div>
+                <div class="network-container">
+                    <!-- Edges (drawn first, behind nodes) -->
+                    <div class="edge e1"></div>
+                    <div class="edge e2"></div>
+                    <div class="edge e3"></div>
+                    <div class="edge e4"></div>
+                    <div class="edge e5"></div>
+                    <div class="edge e6"></div>
+                    <!-- Nodes -->
+                    <div class="node center"></div>
+                    <div class="node n1"></div>
+                    <div class="node n2"></div>
+                    <div class="node n3"></div>
+                    <div class="node n4"></div>
+                    <div class="node n5"></div>
+                    <div class="node n6"></div>
+                </div>
                 <div class="loading-title">Initializing CEDS SHACL Generator</div>
             </div>
             """, unsafe_allow_html=True)
