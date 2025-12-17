@@ -50,9 +50,8 @@ def sync_namespaces_from_graph(graph: Graph) -> dict:
 
 # Cached graph parsing functions
 
-@st.cache_resource(show_spinner=False)
 def _parse_ontology_file(_file_content: bytes, format: str, file_name: str) -> Graph:
-    """Parse an RDF file into a cached Graph. Underscore prefix prevents hashing."""
+    """Parse an RDF file into a Graph. Underscore prefix prevents hashing."""
     graph = Graph()
     graph.parse(data=_file_content, format=format)
     logger.info(f"Parsed '{file_name}' with {len(graph)} triples")
@@ -75,13 +74,14 @@ def _combine_graphs(_graph_list: list) -> Graph:
     return combined
 
 
-# Persistent graph cache (survives Streamlit reruns)
+# Graph storage functions - use session state for non-preloaded graphs
 
-@st.cache_resource
 def _get_graph_cache() -> dict:
-    """Return singleton dictionary for storing graphs across reruns."""
-    logger.info("Initializing graph cache")
-    return {}
+    """Return dictionary for storing graphs. Uses session state for session-scoped storage."""
+    if "_graph_cache" not in st.session_state:
+        st.session_state._graph_cache = {}
+        logger.info("Initializing graph cache in session state")
+    return st.session_state._graph_cache
 
 
 def store_graph(graph_id: str, graph: Graph) -> None:
@@ -144,7 +144,6 @@ def check_preloaded_files() -> dict:
     }
 
 
-@st.cache_data(show_spinner=False)
 def _extract_class_metadata(_graph: Graph) -> dict:
     """Extract all class/property metadata in a single pass. Returns dict with 'classes' and 'labels'."""
     metadata = {
@@ -178,7 +177,6 @@ def _extract_class_metadata(_graph: Graph) -> dict:
     return metadata
 
 
-@st.cache_data(show_spinner=False)
 def _extract_property_constraints(_property_graph: Graph) -> dict:
     """Extract all property shape constraints in a single pass."""
     constraints = {}
@@ -322,6 +320,11 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         constraints_key = f"{class_uri}::{prop_uri}"
         constraints = st.session_state.property_constraints.get(constraints_key, {})
         
+        logger.debug(f"[SHACL GEN] Processing property {prop_uri}")
+        logger.debug(f"[SHACL GEN] constraints_key: {constraints_key}")
+        logger.debug(f"[SHACL GEN] Retrieved constraints from session state: {constraints}")
+        logger.debug(f"[SHACL GEN] All property_constraints keys: {list(st.session_state.property_constraints.keys())}")
+        
         # Check if constraints are truly custom by comparing with property graph defaults
         has_truly_custom_constraints = False
         custom_constraints_to_add = {}  # Store only the truly custom constraints
@@ -409,7 +412,13 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 if is_custom:
                     has_truly_custom_constraints = True
                     custom_constraints_to_add[constraint_name] = constraint_data
-                    logger.debug(f"Adding custom constraint: {constraint_name}={user_value}")
+                    logger.debug(f"[SHACL GEN] Adding custom constraint: {constraint_name}={user_value}")
+                else:
+                    logger.debug(f"[SHACL GEN] Skipping constraint {constraint_name}={user_value} (matches default or not custom)")
+        
+        logger.debug(f"[SHACL GEN] property_exists_in_shapes_file: {property_exists_in_shapes_file}")
+        logger.debug(f"[SHACL GEN] has_truly_custom_constraints: {has_truly_custom_constraints}")
+        logger.debug(f"[SHACL GEN] custom_constraints_to_add: {custom_constraints_to_add}")
 
         # Always add the property shape reference to the class NodeShape
         g1.add((class_node_title, SH.property, prop_shape))
@@ -427,8 +436,14 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         classes = list(g.subjects(RDF.type, RDFS.Class))
         for range_uri in ranges:
 
-            # Check if the range is a class and not a datatype
-            if "#C" in str(range_uri):
+            # Skip if range is a datatype (XSD namespace or typed as rdfs:Datatype)
+            range_str = str(range_uri)
+            is_datatype = (
+                range_str.startswith(str(XSD)) or 
+                (range_uri, RDF.type, RDFS.Datatype) in g
+            )
+            
+            if not is_datatype:
 
                 # Check if the property is an option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
                 option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
@@ -465,13 +480,24 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                         additional_constraints.append((SH.nodeKind, SH.IRI))
 
         # Only create PropertyShape definition if needed
+        # Include additional_constraints check - if we have range-based constraints (like sh:in for option sets),
+        # we need to create the shape definition even if property exists in shapes file
+        needs_shape_definition = (
+            not property_exists_in_shapes_file or 
+            has_truly_custom_constraints or 
+            len(additional_constraints) > 0
+        )
+        logger.debug(f"[SHACL GEN] needs_shape_definition: {needs_shape_definition} (property_exists={property_exists_in_shapes_file}, custom={has_truly_custom_constraints}, additional={len(additional_constraints)})")
+        
         if needs_shape_definition:
             g1.add((prop_shape, RDF.type, SH.PropertyShape))
             g1.add((prop_shape, SH.path, URIRef(prop_uri)))
+            logger.debug(f"[SHACL GEN] Created PropertyShape for {prop_uri}")
             
             # Add additional constraints from range processing
             for predicate, obj in additional_constraints:
                 g1.add((prop_shape, predicate, obj))
+                logger.debug(f"[SHACL GEN] Added range constraint: {predicate} = {obj}")
             
             # Add custom constraints (those that differ from defaults)
             for constraint_name, constraint_data in custom_constraints_to_add.items():
@@ -489,7 +515,13 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                         if datatype and str(datatype) in [str(XSD.integer), str(XSD.int), str(XSD.long)]:
                             literal_value = Literal(int(value))
                         else:
-                            literal_value = Literal(float(value))
+                            # Use decimal datatype to avoid scientific notation (e.g., 2e+00)
+                            float_val = float(value)
+                            # If it's a whole number, use int to get cleaner output
+                            if float_val == int(float_val):
+                                literal_value = Literal(int(float_val), datatype=XSD.decimal)
+                            else:
+                                literal_value = Literal(float_val, datatype=XSD.decimal)
                     elif constraint_name == "pattern":
                         literal_value = Literal(str(value))
                     elif constraint_name == "uniqueLang":
@@ -1051,7 +1083,13 @@ def get_available_constraints_for_datatype(datatype):
         "nodeKind": {"type": "select", "options": ["IRI", "BlankNode", "Literal", "BlankNodeOrIRI", "BlankNodeOrLiteral", "IRIOrLiteral"], "description": "Kind of node"}
     }
     
-    if datatype == XSD.string:
+    # String and string-derived datatypes that support length/pattern constraints
+    string_like_types = [
+        XSD.string, XSD.normalizedString, XSD.token, XSD.language,
+        XSD.Name, XSD.NCName, XSD.NMTOKEN, XSD.anyURI
+    ]
+    
+    if datatype in string_like_types:
         base_constraints.update({
             "minLength": {"type": "number", "min": 0, "description": "Minimum string length"},
             "maxLength": {"type": "number", "min": 0, "description": "Maximum string length"},
@@ -1157,21 +1195,31 @@ def render_constraint_input(constraint_name, constraint_config, current_value, e
     
     # Render appropriate input based on constraint type
     if constraint_config["type"] == "number":
-        # Ensure current_value is a valid number
+        # Determine if this should be integer or float based on step
+        step = constraint_config.get("step", 1)
+        is_integer = step == 1
+        
+        # Ensure current_value is a valid number with consistent type
         if current_value is not None:
             try:
-                current_value = float(current_value) if isinstance(current_value, str) else current_value
-                if constraint_config.get("step", 1) == 1:  # Integer input
-                    current_value = int(current_value)
+                if is_integer:
+                    current_value = int(float(current_value))
+                else:
+                    current_value = float(current_value)
             except (ValueError, TypeError):
-                current_value = constraint_config.get("min", 0)
+                current_value = int(constraint_config.get("min", 0)) if is_integer else float(constraint_config.get("min", 0))
         else:
-            current_value = constraint_config.get("min", 0)
+            current_value = int(constraint_config.get("min", 0)) if is_integer else float(constraint_config.get("min", 0))
+        
+        # Ensure min_value matches the type
+        min_val = constraint_config.get("min", None)
+        if min_val is not None:
+            min_val = int(min_val) if is_integer else float(min_val)
             
         value = st.number_input(
             constraint_name,
-            min_value=constraint_config.get("min", None),
-            step=constraint_config.get("step", 1),
+            min_value=min_val,
+            step=int(step) if is_integer else float(step),
             value=current_value,
             key=value_key
         )
@@ -1218,16 +1266,26 @@ def render_constraint_input(constraint_name, constraint_config, current_value, e
 
 @st.fragment
 def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
-                                  property_graph: Graph, existing_shacl: Graph):
+                                  property_graph: Graph, existing_shacl: Graph, 
+                                  combined_graph: Graph):
     """Fragment for constraint editing. Input changes only rerun this fragment."""
     class_label = labels.get(class_uri, class_uri)
+    
+    # Helper to get a friendly name for datatypes
+    def get_datatype_name(dt):
+        if dt is None:
+            return "Unknown"
+        dt_str = str(dt)
+        if "#" in dt_str:
+            return dt_str.split("#")[-1]
+        return dt_str.split("/")[-1]
     
     with st.expander(f"Class: {class_label}", expanded=False):
         for prop_uri in properties:
             # Find PropertyShape(s) that have sh:path = this property
             shapes = list(property_graph.subjects(predicate=SH.path, object=URIRef(prop_uri)))
             
-            # Skip property if any associated shape has sh:nodeKind sh:IRI
+            # Skip property if any associated shape has sh:nodeKind sh:IRI (object property, not editable)
             skip_due_to_nodekind = any(
                 property_graph.value(shape, SH.nodeKind) == SH.IRI
                 for shape in shapes
@@ -1236,104 +1294,182 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
                 continue
 
             prop_label = labels.get(prop_uri, prop_uri)
-            st.markdown(f"#### Property: {prop_label} (`{prop_uri}`)")
-
-            if not shapes:
-                shapes = list(existing_shacl.subjects(predicate=SH.path, object=URIRef(prop_uri)))
-                if not shapes:
-                    st.warning("No SHACL PropertyShape found for this property.")
-                    continue
-
-            for shape in shapes:
-                st.markdown(f"**Shape URI:** `{shape}`")
-                
-                # Get the datatype of the property
+            
+            # Determine property source and get datatype
+            datatype = None
+            node_kind = None
+            shape = None
+            is_extension_property = False
+            shape_properties = {}
+            
+            if shapes:
+                # Property exists in PropertyShapes.ttl
+                shape = shapes[0]
                 datatype = property_graph.value(shape, SH.datatype)
                 node_kind = property_graph.value(shape, SH.nodeKind)
                 
-                # Display non-editable properties
-                editable_predicates = {
-                    SH.minCount, SH.maxCount, SH.minLength, SH.maxLength, SH.pattern,
-                    SH.minInclusive, SH.maxInclusive, SH.minExclusive, SH.maxExclusive,
-                    SH.nodeKind, SH.languageIn, SH.uniqueLang
-                }
-                
-                st.markdown("**Standard Shape Properties:**")
+                # Collect all shape properties for display
                 for p, o in property_graph.predicate_objects(subject=shape):
-                    p_label = labels.get(str(p), str(p))
-                    o_label = labels.get(str(o), str(o))
-                    st.write(f"- **{p_label}**: {o_label}")
+                    if p != RDF.type:
+                        shape_properties[str(p)] = o
+            else:
+                # Check existing SHACL
+                shapes = list(existing_shacl.subjects(predicate=SH.path, object=URIRef(prop_uri)))
+                if shapes:
+                    shape = shapes[0]
+                    datatype = existing_shacl.value(shape, SH.datatype)
+                    node_kind = existing_shacl.value(shape, SH.nodeKind)
+                    for p, o in existing_shacl.predicate_objects(subject=shape):
+                        if p != RDF.type:
+                            shape_properties[str(p)] = o
+            
+            # For extension properties without shapes, look up range from ontology
+            if datatype is None and combined_graph:
+                ranges = list(combined_graph.objects(URIRef(prop_uri), SDO.rangeIncludes))
+                for r in ranges:
+                    r_str = str(r)
+                    # Check if it's an XSD datatype
+                    if r_str.startswith(str(XSD)):
+                        datatype = r
+                        is_extension_property = True
+                        break
+            
+            # Skip if this is an object property (range is a class, not datatype)
+            if datatype is None and not is_extension_property:
+                # Check if range points to a class (object property)
+                if combined_graph:
+                    ranges = list(combined_graph.objects(URIRef(prop_uri), SDO.rangeIncludes))
+                    for r in ranges:
+                        # If range is a class (not XSD), skip this property
+                        if not str(r).startswith(str(XSD)):
+                            skip_due_to_nodekind = True
+                            break
+            
+            if skip_due_to_nodekind:
+                continue
+            
+            # Determine source based on property URI namespace, not PropertyShapes presence
+            is_ceds_property = str(prop_uri).startswith("http://ceds.ed.gov/")
+            has_property_shape = shape is not None and not is_extension_property
+            
+            # === UI RENDERING ===
+            st.markdown(f"#### {prop_label}")
+            
+            # Property info card
+            with st.container():
+                # Create info columns
+                info_col1, info_col2 = st.columns(2)
+                
+                with info_col1:
+                    st.markdown("**Property Details**")
+                    st.caption(f"🔗 URI: `{prop_uri}`")
+                    
+                    if is_ceds_property:
+                        st.caption("📦 Source: CEDS Ontology")
+                        if not has_property_shape:
+                            st.warning("⚠️ Missing from PropertyShapes.ttl")
+                    else:
+                        st.caption("📦 Source: Extension Ontology")
+                
+                with info_col2:
+                    st.markdown("**Data Type**")
+                    if datatype:
+                        dt_name = get_datatype_name(datatype)
+                        # Color code by datatype category
+                        if "string" in dt_name.lower() or "token" in dt_name.lower() or "uri" in dt_name.lower():
+                            st.success(f"📝 {dt_name}")
+                        elif "int" in dt_name.lower() or "decimal" in dt_name.lower() or "float" in dt_name.lower() or "double" in dt_name.lower():
+                            st.info(f"🔢 {dt_name}")
+                        elif "date" in dt_name.lower() or "time" in dt_name.lower():
+                            st.warning(f"📅 {dt_name}")
+                        elif "bool" in dt_name.lower():
+                            st.info(f"✓ {dt_name}")
+                        else:
+                            st.info(f"📋 {dt_name}")
+                    else:
+                        st.caption("⚠️ No datatype detected")
+                    
+                    if node_kind:
+                        nk_name = get_datatype_name(node_kind)
+                        st.caption(f"Node Kind: {nk_name}")
+            
+            # Show existing shape properties in a toggleable section (can't use expander inside expander)
+            if shape_properties:
+                show_props_key = f"show_props_{class_uri}_{prop_uri}"
+                if show_props_key not in st.session_state:
+                    st.session_state[show_props_key] = False
+                
+                if st.checkbox("Show current shape properties", key=show_props_key, value=False):
+                    props_text = ""
+                    for p_uri, o in shape_properties.items():
+                        p_name = p_uri.split("#")[-1] if "#" in p_uri else p_uri.split("/")[-1]
+                        o_label = labels.get(str(o), str(o))
+                        props_text += f"• {p_name}: {o_label}\n"
+                    st.code(props_text, language=None)
+            
+            # Editable predicates
+            editable_predicates = {
+                SH.minCount, SH.maxCount, SH.minLength, SH.maxLength, SH.pattern,
+                SH.minInclusive, SH.maxInclusive, SH.minExclusive, SH.maxExclusive,
+                SH.nodeKind, SH.languageIn, SH.uniqueLang
+            }
+            
+            # Get available constraints for this datatype
+            available_constraints = get_available_constraints_for_datatype(datatype)
+            
+            # Load existing constraint values
+            constraints_key = f"{class_uri}::{prop_uri}"
+            existing_constraints = st.session_state.property_constraints.get(constraints_key, {})
+            
+            # Check for constraints in existing SHACL
+            property_shapes = list(existing_shacl.subjects(RDF.type, SH.PropertyShape))
+            property_shapes += list(property_graph.subjects(RDF.type, SH.PropertyShape))
+            
+            for ps in property_shapes:
+                path = existing_shacl.value(ps, SH.path)
+                if path is None:
+                    path = property_graph.value(ps, SH.path)
 
-                st.markdown("**Custom Shape Properties:**")
-                # Override with existing SHACL properties if available
-                for p, o in existing_shacl.predicate_objects(subject=shape):
-                    if p in editable_predicates:
-                        continue
-                    p_label = labels.get(str(p), str(p))
-                    o_label = labels.get(str(o), str(o))
-                    st.write(f"- **{p_label}**: {o_label}")
-                
-                if datatype:
-                    label = labels.get(str(datatype), str(datatype))
-                    st.info(f"Detected datatype: {label}")
-                if node_kind:
-                    label = labels.get(str(node_kind), str(node_kind))
-                    st.info(f"Node kind: {label}")
-                
-                # Get available constraints for this datatype
-                available_constraints = get_available_constraints_for_datatype(datatype)
-                
-                # Load existing constraint values
-                constraints_key = f"{class_uri}::{prop_uri}"
-                existing_constraints = st.session_state.property_constraints.get(constraints_key, {})
-                
-                # Identify and remove overlapping property shapes
-                property_shapes = list(existing_shacl.subjects(RDF.type, SH.PropertyShape))
-                property_shapes += list(property_graph.subjects(RDF.type, SH.PropertyShape))
-                subject_predicate_pairs = []
-                
-                for ps in property_shapes:
-                    path = existing_shacl.value(ps, SH.path)
-                    if path is None:
-                        path = property_graph.value(ps, SH.path)
+                if path == URIRef(prop_uri):
+                    shape_message = existing_shacl.value(ps, SH.message)
+                    shape_message_str = str(shape_message) if shape_message else ""
+                    
+                    for p, o in existing_shacl.predicate_objects(ps):
+                        if p in editable_predicates:
+                            constraint_name = str(p).split('#')[-1]
+                            if constraint_name in available_constraints:
+                                existing_constraints[constraint_name] = {
+                                    "value": convert_rdf_literal_to_python(o),
+                                    "enabled": True,
+                                    "shape": str(ps),
+                                    "class": str(class_uri),
+                                    "property": str(prop_uri),
+                                    "datatype": str(datatype) if datatype else None,
+                                    "error_message": shape_message_str
+                                }
 
-                    if path == URIRef(prop_uri):
-                        # First, extract any sh:message from this property shape
-                        shape_message = existing_shacl.value(ps, SH.message)
-                        shape_message_str = str(shape_message) if shape_message else ""
-                        
-                        for p, o in existing_shacl.predicate_objects(ps):
-                            subject_predicate_pairs.append((ps, p))
-                            if p in editable_predicates:
-                                constraint_name = str(p).split('#')[-1]
-                                if constraint_name in available_constraints:
-                                    existing_constraints[constraint_name] = {
-                                        "value": convert_rdf_literal_to_python(o),
-                                        "enabled": True,
-                                        "shape": str(ps),
-                                        "class": str(class_uri),
-                                        "property": str(prop_uri),
-                                        "datatype": str(datatype) if datatype else None,
-                                        "error_message": shape_message_str
-                                    }
-
-                # Load current values from the SHACL graph
-                current_values = {}
+            # Load current values from the property graph
+            current_values = {}
+            if shape:
                 for constraint_name in available_constraints.keys():
                     shacl_predicate = getattr(SH, constraint_name, None)
                     if shacl_predicate:
                         value = property_graph.value(shape, shacl_predicate)
                         if value is not None:
                             current_values[constraint_name] = convert_rdf_literal_to_python(value)
-                
-                st.markdown("**Edit Constraints:**")
-                
+            
+            # Constraint editing section
+            st.markdown("**Edit Constraints**")
+            
+            if not available_constraints:
+                st.info("No editable constraints available for this datatype.")
+            else:
                 # Create two columns for better layout
                 col1, col2 = st.columns(2)
                 
                 updated_constraints = {}
                 constraint_items = list(available_constraints.items())
-                mid_point = len(constraint_items) // 2
+                mid_point = (len(constraint_items) + 1) // 2
                 
                 # Split constraints between two columns
                 for i, (constraint_name, constraint_config) in enumerate(constraint_items):
@@ -1366,20 +1502,22 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
                             updated_constraints[constraint_name] = {
                                 "value": value,
                                 "enabled": True,
-                                "shape": str(shape),
+                                "shape": str(shape) if shape else f"{prop_uri}Shape",
                                 "class": str(class_uri),
                                 "property": str(prop_uri),
                                 "datatype": str(datatype) if datatype else None,
                                 "error_message": error_message
                             }
-                
+            
                 # Update session state
                 if updated_constraints:
                     st.session_state.property_constraints[constraints_key] = updated_constraints
+                    logger.debug(f"[CONSTRAINTS UI] Saved constraints for {constraints_key}: {updated_constraints}")
                 elif constraints_key in st.session_state.property_constraints:
                     del st.session_state.property_constraints[constraints_key]
-                
-                st.markdown("---")
+                    logger.debug(f"[CONSTRAINTS UI] Deleted constraints for {constraints_key}")
+            
+            st.markdown("---")
 
 
 def display_constraints():
@@ -1418,7 +1556,8 @@ def display_constraints():
             properties, 
             metadata['labels'],
             property_graph,
-            existing_shacl
+            existing_shacl,
+            combined_graph
         )
 
 def get_label(uri, graph):
@@ -1607,11 +1746,24 @@ def generate_shacl():
 
 
 def _collect_blank_nodes(graph: Graph, start_node, collected: set) -> None:
-    """Recursively collect all blank nodes reachable from a starting node."""
-    for p, o in graph.predicate_objects(start_node):
-        if isinstance(o, BNode) and o not in collected:
-            collected.add(o)
-            _collect_blank_nodes(graph, o, collected)
+    """Iteratively collect all blank nodes reachable from a starting node.
+    
+    Uses a stack-based approach to avoid recursion depth issues with deep RDF lists.
+    """
+    stack = [start_node]
+    visited = set()
+    
+    while stack:
+        current = stack.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        
+        for p, o in graph.predicate_objects(current):
+            if isinstance(o, BNode) and o not in collected:
+                collected.add(o)
+                if o not in visited:
+                    stack.append(o)
 
 
 def serialize_shacl_sorted(graph: Graph, source_graph: Graph = None) -> str:
