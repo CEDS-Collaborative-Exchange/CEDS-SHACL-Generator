@@ -5,12 +5,15 @@ from rdflib.term import Node
 import rdflib
 import logging
 import csv
+import pandas as pd
+from io import StringIO
 from pathlib import Path
 from io import BytesIO
 from utils.common import add_namespace, get_properties_for_class_deep, get_rdf_format, get_label, get_properties_for_class
 import streamlit as st
 import json
 from streamlit_ace import st_ace
+from streamlit_agraph import agraph, Node as AgNode, Edge, Config
 from typing import List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,26 @@ def sync_namespaces_from_graph(graph: Graph) -> dict:
 def _parse_ontology_file(_file_content: bytes, format: str, file_name: str) -> Graph:
     """Parse an RDF file into a Graph. Underscore prefix prevents hashing."""
     graph = Graph()
+    
+    # Clean file content: remove BOM and normalize line endings
+    # Handle both bytes and string input
+    if isinstance(_file_content, bytes):
+        # Remove UTF-8 BOM if present
+        if _file_content.startswith(b'\xef\xbb\xbf'):
+            _file_content = _file_content[3:]
+            logger.debug(f"Removed UTF-8 BOM from '{file_name}'")
+        # Remove UTF-16 LE BOM
+        elif _file_content.startswith(b'\xff\xfe'):
+            _file_content = _file_content[2:].decode('utf-16-le').encode('utf-8')
+            logger.debug(f"Converted UTF-16 LE to UTF-8 for '{file_name}'")
+        # Remove UTF-16 BE BOM
+        elif _file_content.startswith(b'\xfe\xff'):
+            _file_content = _file_content[2:].decode('utf-16-be').encode('utf-8')
+            logger.debug(f"Converted UTF-16 BE to UTF-8 for '{file_name}'")
+        
+        # Normalize line endings to Unix style (helps with some parsers)
+        _file_content = _file_content.replace(b'\r\n', b'\n').replace(b'\r', b'\n')
+    
     graph.parse(data=_file_content, format=format)
     logger.info(f"Parsed '{file_name}' with {len(graph)} triples")
     return graph
@@ -72,6 +95,32 @@ def _combine_graphs(_graph_list: list) -> Graph:
         combined += graph
     logger.info(f"Combined {len(_graph_list)} graphs with {len(combined)} triples")
     return combined
+
+
+def copy_graph(source: Graph) -> Graph:
+    """Create a deep copy of an RDF graph including all namespaces.
+    
+    This is critical for ensuring that cached preloaded graphs are not mutated
+    when they are stored in session state and later modified.
+    
+    Args:
+        source: The RDF graph to copy
+        
+    Returns:
+        A new Graph object with all triples and namespaces from source
+    """
+    new_graph = Graph()
+    
+    # Copy all namespace bindings first
+    for prefix, ns_uri in source.namespace_manager.namespaces():
+        if prefix:  # Skip empty prefix
+            new_graph.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+    
+    # Copy all triples
+    for triple in source:
+        new_graph.add(triple)
+    
+    return new_graph
 
 
 # Graph storage functions - use session state for non-preloaded graphs
@@ -318,6 +367,11 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
 
         # Determine if there are any truly custom constraints (not just defaults from property graph)
         constraints_key = f"{class_uri}::{prop_uri}"
+        
+        # Ensure property_constraints exists in session state
+        if "property_constraints" not in st.session_state or st.session_state.property_constraints is None:
+            st.session_state.property_constraints = {}
+        
         constraints = st.session_state.property_constraints.get(constraints_key, {})
         
         logger.debug(f"[SHACL GEN] Processing property {prop_uri}")
@@ -350,7 +404,6 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 # If no shapes exist in property graph, any user constraint is custom
                 if not property_shapes_in_graph:
                     is_custom = True
-                    logger.debug(f"Constraint {constraint_name}={user_value} is custom (no shape in property graph)")
                 else:
                     # Compare with default values from property graph
                     for prop_graph_shape in property_shapes_in_graph:
@@ -412,13 +465,6 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                 if is_custom:
                     has_truly_custom_constraints = True
                     custom_constraints_to_add[constraint_name] = constraint_data
-                    logger.debug(f"[SHACL GEN] Adding custom constraint: {constraint_name}={user_value}")
-                else:
-                    logger.debug(f"[SHACL GEN] Skipping constraint {constraint_name}={user_value} (matches default or not custom)")
-        
-        logger.debug(f"[SHACL GEN] property_exists_in_shapes_file: {property_exists_in_shapes_file}")
-        logger.debug(f"[SHACL GEN] has_truly_custom_constraints: {has_truly_custom_constraints}")
-        logger.debug(f"[SHACL GEN] custom_constraints_to_add: {custom_constraints_to_add}")
 
         # Always add the property shape reference to the class NodeShape
         g1.add((class_node_title, SH.property, prop_shape))
@@ -432,18 +478,26 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
         # Track additional constraints from range processing
         additional_constraints = []
         
+        # Track datatype for the property (if any)
+        property_datatype = None
+        
         # Get all of the RDFS classes in the graph to check if the range is a CEDS base class and not an option set
         classes = list(g.subjects(RDF.type, RDFS.Class))
         for range_uri in ranges:
 
-            # Skip if range is a datatype (XSD namespace or typed as rdfs:Datatype)
+            # Check if range is a datatype (XSD namespace or typed as rdfs:Datatype)
             range_str = str(range_uri)
             is_datatype = (
                 range_str.startswith(str(XSD)) or 
                 (range_uri, RDF.type, RDFS.Datatype) in g
             )
             
-            if not is_datatype:
+            if is_datatype:
+                # This is a datatype - add sh:datatype constraint
+                property_datatype = range_uri
+                additional_constraints.append((SH.datatype, URIRef(range_uri)))
+                logger.debug(f"[SHACL GEN] Adding sh:datatype {range_uri} for property {prop_uri}")
+            else:
 
                 # Check if the property is an option set by seeing if range_uri (concept scheme) is used as a class anywhere (concepts)
                 option_set = list(g.subjects(RDF.type, URIRef(range_uri)))
@@ -451,6 +505,9 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                     if any(not str(s).startswith("http://ceds.ed.gov/terms#") for s in option_set):
                         # Custom option set - needs its own definition
                         needs_shape_definition = True
+                        
+                        # Always add sh:in from ontology for option sets
+                        # If existing SHACL has sh:in for this property, it will overwrite later in generate_shacl()
                         option_set_node = BNode()
                         Collection(g1, option_set_node, option_set)
                         additional_constraints.append((SH["in"], option_set_node))
@@ -474,9 +531,13 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                     range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
 
                     additional_constraints.append((SH["class"], URIRef(range_uri)))
-                    additional_constraints.append((SH["node"], range_shape))
-
-                    if str(range_uri) not in class_property_map:
+                    
+                    # Only add sh:node if the range class is in the class_property_map (being expanded)
+                    # If it's just an IRI reference, we don't need sh:node
+                    if str(range_uri) in class_property_map:
+                        additional_constraints.append((SH["node"], range_shape))
+                    else:
+                        # Range class is NOT being expanded - just an IRI reference
                         additional_constraints.append((SH.nodeKind, SH.IRI))
 
         # Only create PropertyShape definition if needed
@@ -501,6 +562,11 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
             
             # Add custom constraints (those that differ from defaults)
             for constraint_name, constraint_data in custom_constraints_to_add.items():
+                # Skip complex constraints that are handled separately (from existing SHACL)
+                if constraint_name in ['datatype', 'in', 'class', 'node']:
+                    logger.debug(f"[SHACL GEN] Skipping complex constraint {constraint_name} - handled from existing SHACL")
+                    continue
+                    
                 shacl_predicate = getattr(SH, constraint_name, None)
                 if shacl_predicate:
                     value = constraint_data["value"]
@@ -890,14 +956,91 @@ def _existing_shacl_fragment():
                         if len(properties) > 0:
                             st.session_state.class_property_map[str(target_class)] = set(properties)
                 
+                # === EXTRACT CONSTRAINTS FROM IMPORTED SHACL ===
+                # This is critical for preserving custom constraints from the uploaded file
+                if "property_constraints" not in st.session_state or st.session_state.property_constraints is None:
+                    st.session_state.property_constraints = {}
+                
+                # Define the constraint predicates we want to extract
+                # Note: sh:datatype and sh:in are handled specially - they're copied directly
+                # from the existing SHACL graph rather than stored as simple values
+                simple_constraint_predicates = {
+                    SH.minCount, SH.maxCount, SH.minLength, SH.maxLength, SH.pattern,
+                    SH.minInclusive, SH.maxInclusive, SH.minExclusive, SH.maxExclusive,
+                    SH.nodeKind, SH.languageIn, SH.uniqueLang,
+                    SH.hasValue, SH.equals, SH.disjoint, SH.lessThan, SH.lessThanOrEquals
+                }
+                # These constraints need special handling (URIRefs or Collections)
+                complex_constraint_predicates = {SH.datatype, SH['in'], SH['class'], SH.node}
+                
+                constraints_imported = 0
+                
+                # For each node shape, extract constraints for its property shapes
+                for node_shape in node_shapes:
+                    target_class = g.value(node_shape, SH.targetClass)
+                    if not target_class:
+                        continue
+                    
+                    class_uri_str = str(target_class)
+                    
+                    # Get property shapes for this node shape
+                    for prop_shape in g.objects(node_shape, SH.property):
+                        # Get the path (property URI)
+                        path = g.value(prop_shape, SH.path)
+                        if not path:
+                            continue
+                        
+                        prop_uri_str = str(path)
+                        constraints_key = f"{class_uri_str}::{prop_uri_str}"
+                        
+                        # Get datatype for this property shape
+                        datatype = g.value(prop_shape, SH.datatype)
+                        
+                        # Get custom error message if any
+                        shape_message = g.value(prop_shape, SH.message)
+                        shape_message_str = str(shape_message) if shape_message else ""
+                        
+                        # Extract simple constraints for this property shape
+                        extracted_constraints = {}
+                        
+                        for pred, obj in g.predicate_objects(prop_shape):
+                            if pred in simple_constraint_predicates:
+                                constraint_name = str(pred).split('#')[-1]
+                                
+                                # Convert the value to Python type
+                                python_value = convert_rdf_literal_to_python(obj)
+                                
+                                extracted_constraints[constraint_name] = {
+                                    "value": python_value,
+                                    "enabled": True,
+                                    "shape": str(prop_shape),
+                                    "class": class_uri_str,
+                                    "property": prop_uri_str,
+                                    "datatype": str(datatype) if datatype else None,
+                                    "error_message": shape_message_str
+                                }
+                                constraints_imported += 1
+                                logger.debug(f"Imported constraint {constraint_name}={python_value} for {prop_uri_str}")
+                        
+                        # Store in session state if we found any constraints
+                        if extracted_constraints:
+                            # Merge with existing constraints (imported takes precedence)
+                            existing = st.session_state.property_constraints.get(constraints_key, {})
+                            existing.update(extracted_constraints)
+                            st.session_state.property_constraints[constraints_key] = existing
+                
+                logger.info(f"Imported {constraints_imported} constraints from existing SHACL")
+                import_stats["constraints_imported"] = constraints_imported
+                
                 # Log import statistics
                 logger.info(f"SHACL Import stats: {import_stats}")
                 if import_stats["properties_missing_path"] > 0:
                     st.warning(f"Note: {import_stats['properties_missing_path']} property shapes could not be resolved. "
                               f"Make sure the Property File is loaded before importing existing SHACL.")
 
+                constraints_msg = f" Imported {constraints_imported} constraints." if constraints_imported > 0 else ""
                 st.success(f"SHACL file '{existing_shacl.name}' loaded successfully with {len(g)} triples. "
-                          f"Found {import_stats['properties_found']} properties across {import_stats['node_shapes']} node shapes.")
+                          f"Found {import_stats['properties_found']} properties across {import_stats['node_shapes']} node shapes.{constraints_msg}")
             except Exception as e:
                 st.error(f"Failed to parse SHACL file '{existing_shacl.name}': {str(e)}")
                 logger.exception(f"Failed to parse existing SHACL file: {e}")
@@ -1000,12 +1143,19 @@ def _render_class_properties_fragment(class_uri_str: str, class_label: str,
     # Individual property checkboxes
     for prop_uri in sorted_property_uris:
         prop_label = labels.get(prop_uri, prop_uri)
+        # Extract local name from URI (e.g., C000000 from http://ceds.ed.gov/terms#C000000)
+        local_name = prop_uri.split("#")[-1] if "#" in prop_uri else prop_uri.split("/")[-1]
+        # Display as "Label (LocalName)" if label differs from local name
+        if prop_label and prop_label != local_name:
+            display_text = f"{prop_label} ({local_name})"
+        else:
+            display_text = local_name
         key = f"{class_uri_str}:{prop_uri}"
         
         is_checked = prop_uri in current_selections
         
         new_value = st.checkbox(
-            f"{prop_label}",
+            display_text,
             value=is_checked,
             key=key
         )
@@ -1417,11 +1567,32 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
             # Get available constraints for this datatype
             available_constraints = get_available_constraints_for_datatype(datatype)
             
-            # Load existing constraint values
+            # Load existing constraint values from session state (includes imported SHACL)
             constraints_key = f"{class_uri}::{prop_uri}"
-            existing_constraints = st.session_state.property_constraints.get(constraints_key, {})
+            existing_constraints = st.session_state.property_constraints.get(constraints_key, {}).copy()
             
-            # Check for constraints in existing SHACL
+            # Remove complex constraints that can't be edited via simple UI
+            # These are handled by copying directly from existing SHACL
+            complex_constraint_names = {'datatype', 'in', 'class', 'node'}
+            for cn in complex_constraint_names:
+                existing_constraints.pop(cn, None)
+            
+            # Add any constraint types from imported constraints that aren't in available_constraints
+            # This ensures imported constraints are shown even if datatype wasn't detected
+            for constraint_name, constraint_data in existing_constraints.items():
+                if constraint_name not in available_constraints:
+                    # Add a generic config for this constraint
+                    value = constraint_data.get("value")
+                    if isinstance(value, bool):
+                        available_constraints[constraint_name] = {"type": "boolean", "description": f"Imported constraint: {constraint_name}"}
+                    elif isinstance(value, int):
+                        available_constraints[constraint_name] = {"type": "number", "min": 0, "description": f"Imported constraint: {constraint_name}"}
+                    elif isinstance(value, float):
+                        available_constraints[constraint_name] = {"type": "number", "step": 0.01, "description": f"Imported constraint: {constraint_name}"}
+                    else:
+                        available_constraints[constraint_name] = {"type": "text", "description": f"Imported constraint: {constraint_name}"}
+            
+            # Check for constraints in existing SHACL graph (backup extraction)
             property_shapes = list(existing_shacl.subjects(RDF.type, SH.PropertyShape))
             property_shapes += list(property_graph.subjects(RDF.type, SH.PropertyShape))
             
@@ -1509,13 +1680,11 @@ def _constraints_class_fragment(class_uri: str, properties: set, labels: dict,
                                 "error_message": error_message
                             }
             
-                # Update session state
+                # Update session state - only update if there are changes
+                # Don't delete existing constraints just because UI didn't show them all
                 if updated_constraints:
                     st.session_state.property_constraints[constraints_key] = updated_constraints
                     logger.debug(f"[CONSTRAINTS UI] Saved constraints for {constraints_key}: {updated_constraints}")
-                elif constraints_key in st.session_state.property_constraints:
-                    del st.session_state.property_constraints[constraints_key]
-                    logger.debug(f"[CONSTRAINTS UI] Deleted constraints for {constraints_key}")
             
             st.markdown("---")
 
@@ -1570,10 +1739,437 @@ def get_label(uri, graph):
         return uri.n3(graph.namespace_manager)
 
 
+def shacl_to_csv_data(shacl_content: str) -> tuple[str, 'pd.DataFrame']:
+    """
+    Parse SHACL content and return CSV string and DataFrame for table display.
+    
+    Based on SHACL_Reader.py logic - creates a flattened hierarchical view.
+    
+    Returns:
+        tuple: (csv_string, DataFrame) for download and display
+    """
+    g = Graph()
+    g.parse(data=shacl_content, format='turtle')
+    
+    # Get ontology graph for label lookups
+    ontology_graph = None
+    if st.session_state.get('combined_graph_id'):
+        ontology_graph = get_cached_graph(st.session_state.combined_graph_id)
+    
+    def get_label_for_uri(uri):
+        """Get the best label for a URI."""
+        if not isinstance(uri, URIRef):
+            if isinstance(uri, Literal):
+                return str(uri)
+            return str(uri)
+        
+        # Try ontology lookup first
+        if ontology_graph:
+            notation = ontology_graph.value(uri, SKOS.notation)
+            if notation:
+                return str(notation)
+            label = ontology_graph.value(uri, RDFS.label)
+            if label:
+                return str(label)
+        
+        # Fall back to prefixed name
+        n3 = uri.n3(g.namespace_manager)
+        if not n3.startswith('<'):
+            return n3
+        
+        # Fall back to local name
+        uri_str = str(uri)
+        if '#' in uri_str:
+            return uri_str.split('#')[-1]
+        return uri_str.split('/')[-1]
+    
+    def get_prefixed(uri):
+        """Get prefixed name for URI."""
+        if isinstance(uri, URIRef):
+            n3 = uri.n3(g.namespace_manager)
+            if not n3.startswith('<'):
+                return n3
+        return str(uri)
+    
+    rows = []
+    
+    # Find all NodeShapes and process them hierarchically
+    for node_shape in g.subjects(RDF.type, SH.NodeShape):
+        shape_name = get_label_for_uri(node_shape)
+        shape_prefixed = get_prefixed(node_shape)
+        
+        # Add NodeShape row
+        rows.append({
+            'Level': 0,
+            'Shape': shape_name,
+            'Property': '',
+            'Constraint': 'a',
+            'Value': 'sh:NodeShape',
+            'URI': shape_prefixed
+        })
+        
+        # Target class
+        for target in g.objects(node_shape, SH.targetClass):
+            target_label = get_label_for_uri(target)
+            rows.append({
+                'Level': 1,
+                'Shape': '',
+                'Property': '',
+                'Constraint': 'sh:targetClass',
+                'Value': target_label,
+                'URI': get_prefixed(target)
+            })
+        
+        # sh:closed
+        closed = g.value(node_shape, SH.closed)
+        if closed:
+            rows.append({
+                'Level': 1,
+                'Shape': '',
+                'Property': '',
+                'Constraint': 'sh:closed',
+                'Value': str(closed),
+                'URI': ''
+            })
+        
+        # Process properties
+        for prop_shape in g.objects(node_shape, SH.property):
+            path = g.value(prop_shape, SH.path)
+            path_label = get_label_for_uri(path) if path else "unknown"
+            path_prefixed = get_prefixed(path) if path else ""
+            
+            rows.append({
+                'Level': 1,
+                'Shape': '',
+                'Property': path_label,
+                'Constraint': 'sh:path',
+                'Value': path_prefixed,
+                'URI': path_prefixed
+            })
+            
+            # Property constraints
+            for pred, obj in g.predicate_objects(prop_shape):
+                if pred == SH.path or pred == RDF.type:
+                    continue
+                
+                pred_local = str(pred).split('#')[-1] if '#' in str(pred) else str(pred).split('/')[-1]
+                
+                if pred == SH['in']:
+                    # Option set - count options
+                    try:
+                        options = list(Collection(g, obj))
+                        ceds_count = sum(1 for o in options if 'ceds' in str(o).lower() or 'ed.gov' in str(o))
+                        ext_count = len(options) - ceds_count
+                        value = f"[{len(options)} options: {ceds_count} CEDS, {ext_count} Extension]"
+                    except:
+                        value = "[option set]"
+                elif pred == SH.node:
+                    value = get_label_for_uri(obj)
+                elif isinstance(obj, Literal):
+                    value = str(obj)
+                elif isinstance(obj, URIRef):
+                    value = get_label_for_uri(obj)
+                else:
+                    value = str(obj)
+                
+                rows.append({
+                    'Level': 2,
+                    'Shape': '',
+                    'Property': '',
+                    'Constraint': f'sh:{pred_local}',
+                    'Value': value,
+                    'URI': ''
+                })
+    
+    # Create DataFrame
+    df = pd.DataFrame(rows)
+    
+    # Create CSV string
+    csv_buffer = StringIO()
+    df.to_csv(csv_buffer, index=False)
+    csv_string = csv_buffer.getvalue()
+    
+    return csv_string, df
+
+
+def shacl_to_graph_data(shacl_content: str, ontology_graph: Graph = None) -> tuple[list, list]:
+    """
+    Parse SHACL content and return nodes and edges for agraph visualization.
+    
+    Args:
+        shacl_content: The SHACL turtle content to visualize
+        ontology_graph: Optional combined ontology graph for looking up labels/notations
+    
+    Returns:
+        tuple: (nodes, edges) for streamlit-agraph
+    """
+    g = Graph()
+    g.parse(data=shacl_content, format='turtle')
+    
+    nodes = []
+    edges = []
+    node_ids = set()
+    
+    # Color scheme - use brighter colors with good contrast for dark mode
+    NODE_SHAPE_COLOR = "#66BB6A"      # Brighter green for NodeShapes
+    PROP_SHAPE_COLOR = "#42A5F5"      # Brighter blue for PropertyShapes
+    TARGET_CLASS_COLOR = "#FFA726"    # Brighter orange for target classes
+    OPTION_SET_COLOR = "#AB47BC"      # Brighter purple for option sets
+    DATATYPE_COLOR = "#78909C"        # Gray for datatypes
+    
+    # Font colors for labels (white for dark backgrounds)
+    FONT_COLOR = "#FFFFFF"
+    
+    def get_label_from_ontology(uri):
+        """Look up skos:notation or rdfs:label from the ontology graph."""
+        if ontology_graph is None or not isinstance(uri, URIRef):
+            return None
+        
+        # Try skos:notation first (preferred for CEDS)
+        notation = ontology_graph.value(uri, SKOS.notation)
+        if notation:
+            return str(notation)
+        
+        # Try rdfs:label
+        label = ontology_graph.value(uri, RDFS.label)
+        if label:
+            return str(label)
+        
+        return None
+    
+    def get_display_label(uri, graph=g):
+        """Get the best display label for a URI."""
+        if not isinstance(uri, URIRef):
+            if isinstance(uri, Literal):
+                return str(uri)[:25]
+            elif isinstance(uri, BNode):
+                return None  # BNodes get special handling
+            return str(uri)[:25]
+        
+        # First try to get notation/label from ontology
+        onto_label = get_label_from_ontology(uri)
+        if onto_label:
+            return onto_label[:35] if len(onto_label) > 35 else onto_label
+        
+        # Fall back to extracting local name from URI
+        uri_str = str(uri)
+        if '#' in uri_str:
+            local = uri_str.split('#')[-1]
+        else:
+            local = uri_str.split('/')[-1]
+        
+        return local[:35] if len(local) > 35 else local
+    
+    def get_prefixed_name(uri, graph=g):
+        """Get the prefixed name (e.g., ceds:P000123) for tooltip."""
+        if isinstance(uri, URIRef):
+            n3 = uri.n3(graph.namespace_manager)
+            if not n3.startswith('<'):
+                return n3
+            # Fallback to local name
+            uri_str = str(uri)
+            if '#' in uri_str:
+                return uri_str.split('#')[-1]
+            return uri_str.split('/')[-1]
+        return str(uri)
+    
+    def get_id(uri):
+        """Get a unique ID for a URI."""
+        if isinstance(uri, URIRef):
+            return str(uri)
+        elif isinstance(uri, BNode):
+            return f"bnode_{uri}"
+        return str(uri)
+    
+    def add_node_if_new(node_id, label, color, size=25, shape="dot", title=""):
+        """Add a node if it doesn't exist."""
+        if node_id not in node_ids:
+            node_ids.add(node_id)
+            nodes.append(AgNode(
+                id=node_id,
+                label=label,
+                size=size,
+                color=color,
+                shape=shape,
+                title=title,  # Tooltip on hover
+                font={"color": FONT_COLOR, "size": 12}
+            ))
+    
+    # Find all NodeShapes
+    for node_shape in g.subjects(RDF.type, SH.NodeShape):
+        node_id = get_id(node_shape)
+        # For NodeShapes, use the shape name (usually has "Shape" suffix)
+        label = get_display_label(node_shape)
+        if not label:
+            label = "NodeShape"
+        prefixed = get_prefixed_name(node_shape)
+        add_node_if_new(node_id, label, NODE_SHAPE_COLOR, size=40, shape="dot", title=f"NodeShape: {prefixed}")
+        
+        # Target class
+        for target in g.objects(node_shape, SH.targetClass):
+            target_id = get_id(target)
+            target_label = get_display_label(target)
+            if not target_label:
+                target_label = "Class"
+            target_prefixed = get_prefixed_name(target)
+            add_node_if_new(target_id, target_label, TARGET_CLASS_COLOR, size=35, shape="diamond", 
+                           title=f"Target Class: {target_prefixed}\n{target_label}")
+            edges.append(Edge(source=node_id, target=target_id, label="target", color="#FFA726", width=2))
+        
+        # Properties (sh:property)
+        for prop_shape in g.objects(node_shape, SH.property):
+            prop_id = get_id(prop_shape)
+            
+            # Get the path for label - this is the property URI
+            # The prop_shape could be a BNode or a URIRef
+            path = g.value(prop_shape, SH.path)
+            
+            if path and isinstance(path, URIRef):
+                path_label = get_display_label(path)
+                path_prefixed = get_prefixed_name(path)
+                if not path_label:
+                    path_label = path_prefixed
+            elif path:
+                # path might be a BNode for sequence paths etc.
+                path_label = "complexPath"
+                path_prefixed = "complex"
+            else:
+                # No path found - try to use the property shape's own URI if it has one
+                if isinstance(prop_shape, URIRef):
+                    path_label = get_display_label(prop_shape)
+                    path_prefixed = get_prefixed_name(prop_shape)
+                else:
+                    path_label = "property"
+                    path_prefixed = "anonymous"
+            
+            add_node_if_new(prop_id, path_label, PROP_SHAPE_COLOR, size=20, shape="dot", 
+                           title=f"Property: {path_prefixed}\n{path_label}")
+            edges.append(Edge(source=node_id, target=prop_id, color="#90CAF9", width=1))
+            
+            # Check for sh:in (option sets)
+            sh_in = g.value(prop_shape, SH['in'])
+            if sh_in:
+                try:
+                    options = list(Collection(g, sh_in))
+                    ceds_count = sum(1 for o in options if 'ceds' in str(o).lower() or 'ed.gov' in str(o))
+                    ext_count = len(options) - ceds_count
+                    option_label = f"[{len(options)}]"
+                    option_id = f"{prop_id}_options"
+                    add_node_if_new(option_id, option_label, OPTION_SET_COLOR, size=15, shape="box", 
+                                   title=f"Option Set for {path_label}\nCEDS: {ceds_count}, Extension: {ext_count}")
+                    edges.append(Edge(source=prop_id, target=option_id, color="#CE93D8", width=1))
+                except Exception:
+                    pass
+            
+            # Check for sh:datatype
+            datatype = g.value(prop_shape, SH.datatype)
+            if datatype:
+                dt_label = get_display_label(datatype)
+                if not dt_label:
+                    dt_label = "datatype"
+                dt_prefixed = get_prefixed_name(datatype)
+                # Reuse datatype nodes by prefixed name
+                dt_id = f"dt_{dt_prefixed}"
+                add_node_if_new(dt_id, dt_label, DATATYPE_COLOR, size=12, shape="box", title=f"Datatype: {dt_prefixed}")
+                edges.append(Edge(source=prop_id, target=dt_id, color="#B0BEC5", width=1))
+            
+            # Check for sh:node (nested shapes)
+            nested_node = g.value(prop_shape, SH.node)
+            if nested_node:
+                nested_id = get_id(nested_node)
+                nested_label = get_display_label(nested_node)
+                if not nested_label:
+                    nested_label = "NestedShape"
+                nested_prefixed = get_prefixed_name(nested_node)
+                add_node_if_new(nested_id, nested_label, NODE_SHAPE_COLOR, size=35, shape="dot", 
+                               title=f"Nested Shape: {nested_prefixed}")
+                edges.append(Edge(source=prop_id, target=nested_id, color="#81C784", width=2, dashes=True))
+    
+    return nodes, edges
+
+
+def show_shacl_graph(shacl_content: str):
+    """Display an interactive graph visualization of the SHACL content."""
+    try:
+        # Get the combined ontology graph for label lookups
+        ontology_graph = None
+        if st.session_state.get('combined_graph_id'):
+            ontology_graph = get_cached_graph(st.session_state.combined_graph_id)
+        
+        nodes, edges = shacl_to_graph_data(shacl_content, ontology_graph)
+        
+        if not nodes:
+            g = Graph()
+            g.parse(data=shacl_content, format='turtle')
+            st.warning(f"No shapes found to visualize. Graph has {len(g)} triples.")
+            return
+        
+        # Layout options
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            layout = st.selectbox("Layout", ["Hierarchical", "Physics"], index=0, key="graph_layout")
+        with col2:
+            height = st.slider("Height", 300, 800, 500, 50, key="graph_height")
+        
+        st.caption(f"📊 {len(nodes)} nodes, {len(edges)} edges — *Drag nodes to rearrange, scroll to zoom, hover for details*")
+        
+        # Display legend
+        st.markdown("""
+        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 5px; font-size: 11px; opacity: 0.8;">
+            <span>🟢 NodeShape</span>
+            <span>🔵 Property</span>
+            <span>🔶 Target</span>
+            <span>🟣 Options</span>
+            <span>⬜ Datatype</span>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Graph configuration based on layout choice
+        if layout == "Hierarchical":
+            config = Config(
+                width="100%",
+                height=height,
+                directed=True,
+                physics=False,
+                hierarchical=True,
+                nodeHighlightBehavior=True,
+                highlightColor="#F7A7A6",
+                collapsible=True,
+                node={'labelProperty': 'label', 'renderLabel': True},
+                link={'labelProperty': 'label', 'renderLabel': False}
+            )
+        else:
+            config = Config(
+                width="100%",
+                height=height,
+                directed=True,
+                physics=True,
+                hierarchical=False,
+                nodeHighlightBehavior=True,
+                highlightColor="#F7A7A6",
+                collapsible=True,
+                node={'labelProperty': 'label', 'renderLabel': True},
+                link={'labelProperty': 'label', 'renderLabel': False}
+            )
+        
+        # Render the graph
+        selected = agraph(nodes=nodes, edges=edges, config=config)
+        
+        # Show selected node info
+        if selected:
+            st.info(f"Selected: **{selected}**")
+        
+    except Exception as e:
+        st.error(f"Error generating graph visualization: {e}")
+        logger.exception("Graph visualization error")
+
+
 def show_SHACL():
     st.header("SHACL")
+    
     if "class_property_map" in st.session_state and st.session_state.class_property_map:
         shacl_content = generate_shacl()
+        
         if shacl_content:
             # Display the SHACL content in the Ace editor
             content = st_ace(
@@ -1586,15 +2182,66 @@ def show_SHACL():
                 key="st-ace-editor",  # Assign a consistent key to target the editor
             )
 
-            # Create a download button for the content
-            st.download_button(
-                label="Download Code",
-                data=content,
-                file_name="SHACL.ttl",
-                mime="text/turtle"
-            )
+            # Generate CSV data once
+            csv_data, df = shacl_to_csv_data(shacl_content)
+            
+            # Download buttons row
+            col1, col2, col3 = st.columns([1, 1, 4])
+            with col1:
+                st.download_button(
+                    label="⬇️ Download TTL",
+                    data=content,
+                    file_name="SHACL.ttl",
+                    mime="text/turtle"
+                )
+            with col2:
+                if csv_data:
+                    st.download_button(
+                        label="⬇️ Download CSV",
+                        data=csv_data,
+                        file_name="SHACL.csv",
+                        mime="text/csv"
+                    )
+            
+            # CSV Table View section
+            st.divider()
+            with st.expander("📊 **SHACL Table View**", expanded=False):
+                if df is not None and not df.empty:
+                    # Style the dataframe for better readability
+                    st.dataframe(
+                        df, 
+                        use_container_width=True, 
+                        height=400,
+                        column_config={
+                            "Level": st.column_config.NumberColumn("Level", width="small"),
+                            "Shape": st.column_config.TextColumn("Shape", width="medium"),
+                            "Property": st.column_config.TextColumn("Property", width="medium"),
+                            "Constraint": st.column_config.TextColumn("Constraint", width="medium"),
+                            "Value": st.column_config.TextColumn("Value", width="large"),
+                            "URI": st.column_config.TextColumn("URI", width="medium"),
+                        }
+                    )
+                else:
+                    st.warning("No data to display in table format.")
     else:
         st.info("No SHACL content to display. Please select class-property mappings.")
+
+
+def show_graph_visualization():
+    """Dedicated page for SHACL graph visualization."""
+    st.header("📊 SHACL Graph Visualization")
+    
+    if "class_property_map" not in st.session_state or not st.session_state.class_property_map:
+        st.info("No SHACL content to visualize. Please select class-property mappings first.")
+        return
+    
+    shacl_content = generate_shacl()
+    if not shacl_content:
+        st.warning("Could not generate SHACL content.")
+        return
+    
+    show_shacl_graph(shacl_content)
+
 
 def update_class_property_map(class_uri, prop, key):
     """Update the class-property mappings in session state."""
@@ -1638,6 +2285,59 @@ def generate_shacl():
         if properties:  # Only include classes with properties
             create_node_shape(g1, combined_graph, class_uri, {}, shacl_namespace)
             create_property_shapes(g1, combined_graph, class_uri, properties, st.session_state.class_property_map, shacl_namespace)
+
+    # === COPY COMPLEX CONSTRAINTS FROM EXISTING SHACL ===
+    # Complex constraints like sh:in (lists), sh:datatype (URIRefs), etc. cannot be stored
+    # as simple values - copy them directly from the existing SHACL graph
+    existing_shacl = get_cached_graph(st.session_state.existing_shacl_id) if st.session_state.get("existing_shacl_id") else None
+    
+    if existing_shacl and len(existing_shacl) > 0:
+        # Also bind namespaces from existing SHACL
+        for prefix, ns_uri in existing_shacl.namespace_manager.namespaces():
+            if prefix:
+                g1.namespace_manager.bind(prefix, Namespace(str(ns_uri)))
+        
+        complex_predicates = {SH['in'], SH.node, SH.name, SH.description}
+        
+        # For each property shape we generated, look for complex constraints in existing SHACL
+        for prop_shape in list(g1.subjects(RDF.type, SH.PropertyShape)):
+            path = g1.value(prop_shape, SH.path)
+            if not path:
+                continue
+            
+            # Find matching property shapes in existing SHACL by sh:path
+            for existing_shape in existing_shacl.subjects(SH.path, path):
+                # Copy complex constraints from existing SHACL
+                for pred, obj in existing_shacl.predicate_objects(existing_shape):
+                    if pred in complex_predicates:
+                        # For sh:in, we need to copy the entire RDF list
+                        if pred == SH['in']:
+                            if isinstance(obj, BNode):
+                                # Copy the list by creating a new Collection
+                                try:
+                                    list_items = list(Collection(existing_shacl, obj))
+                                    if list_items:
+                                        # Remove any existing sh:in from g1 for this shape (including bad string values)
+                                        for old_in in list(g1.objects(prop_shape, SH['in'])):
+                                            g1.remove((prop_shape, SH['in'], old_in))
+                                            # If old_in is a BNode (list), also remove the list triples
+                                            if isinstance(old_in, BNode):
+                                                _remove_collection_triples(g1, old_in)
+                                        # Create new list in g1
+                                        new_list_node = BNode()
+                                        Collection(g1, new_list_node, list_items)
+                                        g1.add((prop_shape, SH['in'], new_list_node))
+                                        logger.debug(f"Copied sh:in list with {len(list_items)} items for {path}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to copy sh:in list for {path}: {e}")
+                            # Skip string literals for sh:in - they're invalid (old bug)
+                            # Don't copy them
+                        else:
+                            # For other complex predicates, copy directly if not already present
+                            existing_values = list(g1.objects(prop_shape, pred))
+                            if obj not in existing_values:
+                                g1.add((prop_shape, pred, obj))
+                                logger.debug(f"Copied {pred} = {obj} for {path}")
 
     # Remove default constraints present in the loaded property graph (g2)
     # Match property shapes by sh:path and drop only constraints that equal defaults
@@ -1743,6 +2443,36 @@ def generate_shacl():
     except Exception as e:
         st.error(f"Failed to generate SHACL: {e}")
         return None
+
+
+def _remove_collection_triples(graph: Graph, list_node: BNode) -> None:
+    """Remove all triples that make up an RDF Collection (list) starting from the given BNode.
+    
+    RDF lists are represented as chains of blank nodes with rdf:first and rdf:rest.
+    This function removes all those triples to prevent orphaned list nodes.
+    """
+    if not isinstance(list_node, BNode):
+        return
+    
+    current = list_node
+    visited = set()
+    
+    while current is not None and current not in visited:
+        visited.add(current)
+        
+        # Get the rest pointer before removing triples
+        rest = graph.value(current, RDF.rest)
+        
+        # Remove rdf:first and rdf:rest triples for this node
+        for pred in [RDF.first, RDF.rest]:
+            for obj in list(graph.objects(current, pred)):
+                graph.remove((current, pred, obj))
+        
+        # Move to next node in list (if it's a BNode and not rdf:nil)
+        if isinstance(rest, BNode):
+            current = rest
+        else:
+            current = None
 
 
 def _collect_blank_nodes(graph: Graph, start_node, collected: set) -> None:

@@ -10,7 +10,9 @@ from utils.SHACL import (
     _load_preloaded_property_shapes,
     store_graph,
     namespaces,
-    sync_namespaces_from_graph
+    sync_namespaces_from_graph,
+    show_graph_visualization,
+    copy_graph
 )
 import hashlib
 
@@ -203,26 +205,30 @@ def load_preloaded_files():
             status_text.markdown("<p style='text-align: center; font-size: 16px; color: #888;'>📚 Loading CEDS Ontology (this may take a moment)...</p>", unsafe_allow_html=True)
             preloaded_graph = _load_preloaded_ontology()
             if preloaded_graph and len(preloaded_graph) > 0:
-                graph_hash = hashlib.md5(preloaded_graph.serialize(format='nt').encode()).hexdigest()[:16]
-                graph_id = f"combined_preload_{graph_hash}_{len(preloaded_graph)}"
-                store_graph(graph_id, preloaded_graph)
+                # IMPORTANT: Copy the cached graph to avoid mutating the global cache
+                session_graph = copy_graph(preloaded_graph)
+                graph_hash = hashlib.md5(session_graph.serialize(format='nt').encode()).hexdigest()[:16]
+                graph_id = f"combined_preload_{graph_hash}_{len(session_graph)}"
+                store_graph(graph_id, session_graph)
                 st.session_state.combined_graph_id = graph_id
                 st.session_state.preloaded_ontology_loaded = True
                 # Auto-extract namespaces from the loaded ontology
-                sync_namespaces_from_graph(preloaded_graph)
+                sync_namespaces_from_graph(session_graph)
         
         # Load property shapes if available
         if preload_status["property_shapes"] and not st.session_state.preloaded_property_loaded:
             status_text.markdown("<p style='text-align: center; font-size: 16px; color: #888;'>📋 Loading Property Shapes...</p>", unsafe_allow_html=True)
             preloaded_props = _load_preloaded_property_shapes()
             if preloaded_props and len(preloaded_props) > 0:
-                prop_hash = hashlib.md5(preloaded_props.serialize(format='nt').encode()).hexdigest()[:16]
-                prop_id = f"property_preload_{prop_hash}_{len(preloaded_props)}"
-                store_graph(prop_id, preloaded_props)
+                # IMPORTANT: Copy the cached graph to avoid mutating the global cache
+                session_props = copy_graph(preloaded_props)
+                prop_hash = hashlib.md5(session_props.serialize(format='nt').encode()).hexdigest()[:16]
+                prop_id = f"property_preload_{prop_hash}_{len(session_props)}"
+                store_graph(prop_id, session_props)
                 st.session_state.property_graph_id = prop_id
                 st.session_state.preloaded_property_loaded = True
                 # Auto-extract namespaces from property shapes too
-                sync_namespaces_from_graph(preloaded_props)
+                sync_namespaces_from_graph(session_props)
         
         status_text.markdown("<p style='text-align: center; font-size: 16px; color: #28a745;'>✅ Ready!</p>", unsafe_allow_html=True)
         time.sleep(0.5)  # Brief pause to show "Ready!" message
@@ -260,7 +266,7 @@ def app():
         st.session_state.startup_complete = True
 
 
-    page = st.sidebar.radio("Go to", ["Ontology Files", "Class and Property Menu", "Constraints", "SHACL"])
+    page = st.sidebar.radio("Go to", ["Ontology Files", "Class and Property Menu", "Constraints", "SHACL", "Graph View"])
 
     if page == "Ontology Files":
         ontology_manager()
@@ -270,6 +276,8 @@ def app():
         display_constraints()
     elif page == "SHACL":   
         show_SHACL()
+    elif page == "Graph View":
+        show_graph_visualization()
 
 
         

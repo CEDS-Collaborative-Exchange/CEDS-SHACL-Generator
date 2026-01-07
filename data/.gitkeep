@@ -1,0 +1,7 @@
+# This folder contains preloaded CEDS data files.
+# Place the following files here for automatic loading:
+# - CEDS-Ontology.rdf (CEDS base ontology)
+# - PropertyShapes.ttl (CEDS property shapes)
+#
+# These files are not included in the repository due to size.
+# Download them from the official CEDS repository.

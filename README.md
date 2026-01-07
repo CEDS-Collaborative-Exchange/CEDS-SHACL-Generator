@@ -4,6 +4,17 @@
 
 This Python tool generates SHACL shape definitions from a list of RDF class and property identifiers. It is designed for use with the CEDS and Extension ontologies and outputs a filtered SHACL file.
 
+# Quick Start with Preloaded Files
+
+For faster startup, you can place the base CEDS files in the `data/` folder:
+
+1. **CEDS-Ontology.rdf** - The CEDS base ontology
+2. **PropertyShapes.ttl** - The CEDS property shapes
+
+When these files are present, you can load them with a single click instead of uploading each session. This is especially useful since these files are large and rarely change.
+
+> **Note:** These files are excluded from git (see `.gitignore`) due to their size. Download them from the official CEDS repositories.
+
 # Input Requirements
 
 The script expects a CSV input file containing Class IDs and Property IDs located in the ETL checklist in the following format:  
