@@ -15,6 +15,12 @@ from utils.SHACL import (
     copy_graph
 )
 import hashlib
+from utils.metrics_logger import (
+    MetricsCollector,
+    log_startup_metrics,
+    measure_performance
+)
+import time as time_module
 
 
 st.set_page_config(
@@ -24,8 +30,12 @@ st.set_page_config(
 )
 import time
 
+# Log application startup metrics
+log_startup_metrics()
+
 def load_preloaded_files():
     """Automatically load preloaded files on startup."""
+    start_time = time_module.time()
     preload_status = check_preloaded_files()
     files_to_load = []
     
@@ -34,6 +44,8 @@ def load_preloaded_files():
         files_to_load.append("CEDS Ontology")
     if preload_status["property_shapes"] and not st.session_state.preloaded_property_loaded:
         files_to_load.append("Property Shapes")
+    
+    MetricsCollector.log_user_action("PRELOAD_FILES_START", f"FilesToLoad={files_to_load}")
     
     if not files_to_load:
         return False  # Nothing to load
@@ -203,6 +215,7 @@ def load_preloaded_files():
         # Load ontology if available
         if preload_status["ontology"] and not st.session_state.preloaded_ontology_loaded:
             status_text.markdown("<p style='text-align: center; font-size: 16px; color: #888;'>📚 Loading CEDS Ontology (this may take a moment)...</p>", unsafe_allow_html=True)
+            ontology_start = time_module.time()
             preloaded_graph = _load_preloaded_ontology()
             if preloaded_graph and len(preloaded_graph) > 0:
                 # IMPORTANT: Copy the cached graph to avoid mutating the global cache
@@ -214,10 +227,17 @@ def load_preloaded_files():
                 st.session_state.preloaded_ontology_loaded = True
                 # Auto-extract namespaces from the loaded ontology
                 sync_namespaces_from_graph(session_graph)
+                ontology_duration = (time_module.time() - ontology_start) * 1000
+                MetricsCollector.log_graph_operation(
+                    "LOAD_ONTOLOGY",
+                    len(session_graph),
+                    ontology_duration
+                )
         
         # Load property shapes if available
         if preload_status["property_shapes"] and not st.session_state.preloaded_property_loaded:
             status_text.markdown("<p style='text-align: center; font-size: 16px; color: #888;'>📋 Loading Property Shapes...</p>", unsafe_allow_html=True)
+            props_start = time_module.time()
             preloaded_props = _load_preloaded_property_shapes()
             if preloaded_props and len(preloaded_props) > 0:
                 # IMPORTANT: Copy the cached graph to avoid mutating the global cache
@@ -229,9 +249,24 @@ def load_preloaded_files():
                 st.session_state.preloaded_property_loaded = True
                 # Auto-extract namespaces from property shapes too
                 sync_namespaces_from_graph(session_props)
+                props_duration = (time_module.time() - props_start) * 1000
+                MetricsCollector.log_graph_operation(
+                    "LOAD_PROPERTY_SHAPES",
+                    len(session_props),
+                    props_duration
+                )
         
         status_text.markdown("<p style='text-align: center; font-size: 16px; color: #28a745;'>✅ Ready!</p>", unsafe_allow_html=True)
         time.sleep(0.5)  # Brief pause to show "Ready!" message
+        
+        # Log completion metrics
+        total_duration = (time_module.time() - start_time) * 1000
+        MetricsCollector.log_performance_metric(
+            "PRELOAD_FILES_COMPLETE",
+            total_duration,
+            True,
+            f"FilesLoaded={len(files_to_load)}"
+        )
     
     # Clear the loading screen
     loading_container.empty()
@@ -262,11 +297,21 @@ def app():
 
     # Auto-load preloaded files on first run
     if not st.session_state.startup_complete:
+        MetricsCollector.log_session_start()
         load_preloaded_files()
         st.session_state.startup_complete = True
+        MetricsCollector.log_resource_snapshot()
 
 
     page = st.sidebar.radio("Go to", ["Ontology Files", "Class and Property Menu", "Constraints", "SHACL", "Graph View"])
+
+    # Log page navigation
+    if "current_page" not in st.session_state or st.session_state.current_page != page:
+        MetricsCollector.log_page_navigation(page)
+        st.session_state.current_page = page
+        
+        # Log resource usage on page change
+        MetricsCollector.log_memory_usage()
 
     if page == "Ontology Files":
         ontology_manager()
