@@ -529,16 +529,83 @@ def create_property_shapes(g1, g, class_uri, property_uris, class_property_map, 
                         range_namespace = str(range_uri).rsplit("#", 1)[0] + "#"
 
                     range_shape = URIRef(f"{range_namespace}{range_notation}Shape")
-
-                    additional_constraints.append((SH["class"], URIRef(range_uri)))
                     
-                    # Only add sh:node if the range class is in the class_property_map (being expanded)
-                    # If it's just an IRI reference, we don't need sh:node
-                    if str(range_uri) in class_property_map:
-                        additional_constraints.append((SH["node"], range_shape))
+                    # Check if user has selected specific classes for this property
+                    selection_key = f"{class_uri}::{prop_uri}"
+                    property_class_selections = st.session_state.get("property_class_selections", {})
+                    selected_classes = property_class_selections.get(selection_key, [])
+                    
+                    if selected_classes and len(selected_classes) > 1:
+                        # Multiple classes selected - create sh:or construct
+                        logger.debug(f"[SHACL GEN] Multiple classes selected for {prop_uri}: {selected_classes}")
+                        
+                        # Create a list of blank nodes for sh:or
+                        or_list = []
+                        for selected_class_uri in selected_classes:
+                            class_constraint_node = BNode()
+                            g1.add((class_constraint_node, SH["class"], URIRef(selected_class_uri)))
+                            or_list.append(class_constraint_node)
+                        
+                        # Create the sh:or collection
+                        or_collection_node = BNode()
+                        Collection(g1, or_collection_node, or_list)
+                        additional_constraints.append((SH["or"], or_collection_node))
+                        
+                        # Add sh:node if any of the selected classes is in class_property_map
+                        for selected_class_uri in selected_classes:
+                            if str(selected_class_uri) in class_property_map:
+                                # Use the first selected class that's being expanded for sh:node
+                                selected_notation = next(g.objects(URIRef(selected_class_uri), SKOS.notation), None)
+                                if selected_notation:
+                                    for prefix, uri in g.namespaces():
+                                        if str(selected_class_uri).startswith(str(uri)):
+                                            selected_namespace = uri
+                                            break
+                                    else:
+                                        selected_namespace = str(selected_class_uri).rsplit("#", 1)[0] + "#"
+                                    
+                                    selected_shape = URIRef(f"{selected_namespace}{selected_notation}Shape")
+                                    additional_constraints.append((SH["node"], selected_shape))
+                                    break
+                        else:
+                            # None of the selected classes are being expanded - just IRI reference
+                            additional_constraints.append((SH.nodeKind, SH.BlankNodeOrIRI))
+                    
+                    elif selected_classes and len(selected_classes) == 1:
+                        # Single class explicitly selected - use it
+                        selected_class_uri = selected_classes[0]
+                        logger.debug(f"[SHACL GEN] Single class selected for {prop_uri}: {selected_class_uri}")
+                        
+                        additional_constraints.append((SH["class"], URIRef(selected_class_uri)))
+                        
+                        # Add sh:node if the selected class is in class_property_map
+                        if str(selected_class_uri) in class_property_map:
+                            selected_notation = next(g.objects(URIRef(selected_class_uri), SKOS.notation), None)
+                            if selected_notation:
+                                for prefix, uri in g.namespaces():
+                                    if str(selected_class_uri).startswith(str(uri)):
+                                        selected_namespace = uri
+                                        break
+                                else:
+                                    selected_namespace = str(selected_class_uri).rsplit("#", 1)[0] + "#"
+                                
+                                selected_shape = URIRef(f"{selected_namespace}{selected_notation}Shape")
+                                additional_constraints.append((SH["node"], selected_shape))
+                        else:
+                            # Selected class not being expanded - IRI reference
+                            additional_constraints.append((SH.nodeKind, SH.IRI))
+                    
                     else:
-                        # Range class is NOT being expanded - just an IRI reference
-                        additional_constraints.append((SH.nodeKind, SH.IRI))
+                        # No explicit selection - use the default range class
+                        additional_constraints.append((SH["class"], URIRef(range_uri)))
+                        
+                        # Only add sh:node if the range class is in the class_property_map (being expanded)
+                        # If it's just an IRI reference, we don't need sh:node
+                        if str(range_uri) in class_property_map:
+                            additional_constraints.append((SH["node"], range_shape))
+                        else:
+                            # Range class is NOT being expanded - just an IRI reference
+                            additional_constraints.append((SH.nodeKind, SH.IRI))
 
         # Only create PropertyShape definition if needed
         # Include additional_constraints check - if we have range-based constraints (like sh:in for option sets),
@@ -1112,8 +1179,17 @@ def load_ontologies(file_list):
 def _render_class_properties_fragment(class_uri_str: str, class_label: str, 
                                        sorted_property_uris: list, labels: dict):
     """Render property checkboxes for a single class."""
+    from utils.common import is_parent_class, get_class_hierarchy
+    
     # Get current selections from session state
     current_selections = st.session_state.class_property_map.get(class_uri_str, set())
+    
+    # Initialize property_class_selections if not exists
+    if "property_class_selections" not in st.session_state:
+        st.session_state.property_class_selections = {}
+    
+    # Get combined graph for checking ranges
+    combined_graph = get_cached_graph(st.session_state.combined_graph_id) if st.session_state.combined_graph_id else Graph()
     
     # Determine if all properties are selected
     all_selected = len(sorted_property_uris) > 0 and all(
@@ -1169,6 +1245,88 @@ def _render_class_properties_fragment(class_uri_str: str, class_label: str,
                 # Clean up empty sets
                 if class_uri_str in st.session_state.class_property_map and not st.session_state.class_property_map[class_uri_str]:
                     del st.session_state.class_property_map[class_uri_str]
+        
+        # If property is checked, show class selection UI for object properties
+        if prop_uri in current_selections and combined_graph and len(combined_graph) > 0:
+            # Check if this property has rangeIncludes pointing to classes
+            ranges = list(combined_graph.objects(URIRef(prop_uri), SDO.rangeIncludes))
+            
+            for range_uri in ranges:
+                range_str = str(range_uri)
+                # Skip if it's a datatype
+                if range_str.startswith(str(XSD)) or (range_uri, RDF.type, RDFS.Datatype) in combined_graph:
+                    continue
+                
+                # Check if it's an option set (ConceptScheme with instances)
+                option_set = list(combined_graph.subjects(RDF.type, URIRef(range_uri)))
+                if len(option_set) > 0:
+                    # This is an option set, not a class hierarchy
+                    continue
+                
+                # Check if range is a class
+                classes = list(combined_graph.subjects(RDF.type, RDFS.Class))
+                if range_uri in classes:
+                    # This is an object property pointing to a class
+                    # Check if the range class is a parent class
+                    if is_parent_class(str(range_uri), combined_graph):
+                        # Show class selection UI
+                        hierarchy = get_class_hierarchy(str(range_uri), combined_graph)
+                        
+                        with st.container():
+                            st.markdown(f"   ↳ **Select classes for {prop_label}:**")
+                            
+                            # Create selection key
+                            selection_key = f"{class_uri_str}::{prop_uri}"
+                            
+                            # Get current selections or default to just the parent
+                            current_class_selections = st.session_state.property_class_selections.get(
+                                selection_key, 
+                                [str(range_uri)]
+                            )
+                            
+                            # Prepare options for multiselect
+                            options = []
+                            default_values = []
+                            for item in hierarchy:
+                                class_uri = item['uri']
+                                class_label = item['label']
+                                class_local_name = class_uri.split("#")[-1] if "#" in class_uri else class_uri.split("/")[-1]
+                                
+                                if class_label and class_label != class_local_name:
+                                    option_label = f"{class_label} ({class_local_name})"
+                                else:
+                                    option_label = class_local_name
+                                
+                                options.append((class_uri, option_label))
+                                
+                                # Set default selections
+                                if class_uri in current_class_selections:
+                                    default_values.append(class_uri)
+                            
+                            # If no classes were previously selected, default to the parent class
+                            if not default_values and hierarchy:
+                                default_values = [hierarchy[0]['uri']]
+                            
+                            # Multiselect widget
+                            multiselect_key = f"class_select_{selection_key}"
+                            selected_classes = st.multiselect(
+                                "Choose one or more classes:",
+                                options=[uri for uri, label in options],
+                                default=default_values,
+                                format_func=lambda x: next((label for uri, label in options if uri == x), x),
+                                key=multiselect_key
+                            )
+                            
+                            # Store selections in session state
+                            if selected_classes:
+                                st.session_state.property_class_selections[selection_key] = selected_classes
+                            else:
+                                # If nothing selected, remove from selections
+                                st.session_state.property_class_selections.pop(selection_key, None)
+                    else:
+                        # Not a parent class - just use the single class (no UI needed)
+                        # This will be handled automatically in SHACL generation
+                        pass
 
 
 @st.fragment
